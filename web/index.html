@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prism · 棱镜</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">PRISM<em>棱镜</em></div>
+  <nav class="topnav">
+    <button class="tab" data-view="search">检索</button>
+    <button class="tab" data-view="browse">浏览</button>
+    <button class="tab" data-view="dupes">近似重复</button>
+  </nav>
+  <div class="status" id="status"><i class="dot"></i><span>连接中…</span></div>
+</header>
+
+<main class="layout">
+
+  <aside class="sidebar">
+    <div class="side-head">
+      <span class="label">库 / LIBRARIES</span>
+      <button id="btn-new-lib" class="btn-ghost" title="新建库">＋</button>
+    </div>
+    <ul id="lib-list" class="lib-list"></ul>
+    <div class="side-foot">
+      <div id="stats" class="stats"></div>
+      <button id="btn-settings" class="btn-ghost side-btn" title="设置嵌入服务等">⚙ 设置</button>
+    </div>
+  </aside>
+
+  <section class="workspace">
+
+    <!-- 检索视图 -->
+    <div id="view-search" class="view">
+      <div class="searchbar">
+        <input id="q" type="text" placeholder="用一句话描述 —— 或把图片/视频/音频直接拖进来搜" autocomplete="off">
+        <button id="btn-blob" class="btn-ghost btn-attach" title="拖拽文件到输入框，或点这里选文件，用它去搜库里相似的内容（任意模态互搜）">📎</button>
+        <input id="blob-file" type="file" style="display:none">
+        <select id="modality">
+          <option value="">全部类型</option>
+          <option value="image">图片</option>
+            <option value="video">视频</option>
+          <option value="text">文本</option>
+          <option value="audio">音频</option>
+        </select>
+        <label class="switch" title="把同一个文件的多段命中合并成一条（否则一个长文件会占掉多个结果位）">
+          <input type="checkbox" id="group-mode" checked><span>按文件</span>
+        </label>
+        <select id="search-mode" title="检索方式：混合=关键词命中置顶＋语义补足（推荐）；语义=纯向量按意思找；关键词=朴素子串匹配，适合搜确切名字/后缀/原话">
+          <option value="mixed">混合</option>
+          <option value="semantic">语义</option>
+          <option value="keyword">关键词</option>
+        </select>
+        <select id="top-k" title="这次检索返回多少条。只影响界面显示，不影响接口的默认值（脚本调用始终是 12 条）">
+          <option value="24">24 条</option>
+          <option value="50">50 条</option>
+          <option value="100">100 条</option>
+          <option value="500">500 条</option>
+          <option value="0">全部</option>
+        </select>
+        <button id="btn-search" class="btn">检索</button>
+        <button id="btn-clear" class="btn-ghost" title="清空检索结果（保留输入的文字）">✕ 刷新</button>
+      </div>
+      <div id="blob-query" class="blob-query" style="display:none"></div>
+      <div id="results" class="results"></div>
+    </div>
+
+    <!-- 浏览视图 -->
+    <div id="view-browse" class="view hidden">
+      <div class="browse-head">
+        <div>
+          <span id="browse-title" class="label">选择一个库</span>
+          <div id="browse-sub" class="browse-sub"></div>
+        </div>
+        <div class="browse-tools">
+          <select id="browse-modality">
+            <option value="">全部</option>
+            <option value="image">图片</option>
+            <option value="video">视频</option>
+            <option value="text">文本</option>
+            <option value="audio">音频</option>
+          </select>
+          <div class="view-toggle" title="显示方式">
+            <button id="btn-mode-list" class="on" title="列表：每行一条">▤</button>
+            <button id="btn-mode-grid" title="图标：网格缩略图（像 Windows 文件夹）">▦</button>
+          </div>
+          <button id="btn-rescan" class="btn-ghost">检查文件</button>
+        </div>
+      </div>
+      <div id="browse-list" class="browse-list"></div>
+      <div id="browse-pager" class="pager hidden"></div>
+    </div>
+
+    <!-- 近似重复视图 -->
+    <div id="view-dupes" class="view hidden">
+      <div class="browse-head">
+        <span class="label">近似重复</span>
+        <div class="dup-bar">
+          <label>相似度 ≥ <input type="number" id="dup-threshold" value="0.97" min="0.5" max="1" step="0.01"></label>
+          <label><input type="checkbox" id="dup-same-file"> 含同一文件的段落</label>
+          <button id="btn-dupes" class="btn-ghost">重新检测</button>
+        </div>
+      </div>
+      <div class="dup-hint">
+        用途：找<strong>内容高度相似的不同文件</strong>（同一个文件存了两份、同一素材的多个改版）。
+        点任意一行可<strong>并排预览</strong>两个文件来确认。<br>
+        注意：相似度高 ≠ 内容重复 —— 音频/图片在同一个嵌入空间里只要题材相近就会很接近（音乐库里不同的曲子常在 97% 以上），
+        所以这里的百分比只用来<strong>排序、缩小范围</strong>，最终请以预览到的实际内容为准。
+      </div>
+      <div id="dupes-list" class="browse-list"></div>
+    </div>
+
+    <!-- 导入区（所有视图共用） -->
+    <div id="dropzone" class="dropzone">
+      <strong>把文件或文件夹拖到这里</strong>
+      <span>支持图片 / 视频 / 文本 / 音频 · 递归扫描 · 只记索引，不动原文件</span>
+      <input type="file" id="file-picker" multiple webkitdirectory hidden>
+      <div class="pick-row">
+        <select id="pick-kind" title="按类型过滤文件对话框里显示的格式">
+          <option value="">全部格式</option>
+          <option value="text">文本 / 代码</option>
+          <option value="image">图片</option>
+            <option value="video">视频</option>
+          <option value="audio">音频</option>
+          <option value="md">只看 Markdown</option>
+          <option value="txt,md,json">txt / md / json</option>
+        </select>
+        <button id="btn-pick" class="btn-ghost btn-pick">或点击选择文件</button>
+        <button id="btn-pick-dir" class="btn-ghost btn-pick">选择文件夹</button>
+      </div>
+    </div>
+
+    <div id="progress" class="progress hidden">
+      <div class="progress-bar"><div id="progress-fill"></div></div>
+      <div class="progress-text" id="progress-text"></div>
+      <div id="progress-failed" class="progress-failed"></div>
+      <div id="progress-acts" class="progress-acts"></div>
+    </div>
+
+  </section>
+</main>
+
+<!-- 条目详情抽屉 -->
+<aside id="drawer" class="drawer hidden">
+  <div class="drawer-head">
+    <span class="label">条目</span>
+    <button id="drawer-close" class="btn-ghost">✕</button>
+  </div>
+  <div id="drawer-body" class="drawer-body"></div>
+</aside>
+
+<!-- 全文查看弹层 -->
+<div id="text-modal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span id="text-modal-title" class="label">全文</span>
+      <button id="text-modal-close" class="btn-ghost">✕</button>
+    </div>
+    <div id="text-modal-meta" class="modal-meta"></div>
+    <pre id="text-modal-body" class="modal-pre"></pre>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
