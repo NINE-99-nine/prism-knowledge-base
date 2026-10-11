@@ -227,7 +227,7 @@ async function doSearchByBlob(file) {
       $("#results").innerHTML = `<div class="empty">没有找到相似的内容。</div>`;
       return;
     }
-    renderResults(d.results, { mode: "以文件检索" });
+    renderCards(d.results);
   } catch (e) {
     box.innerHTML = `<div class="empty">检索失败：${escapeHtml(String(e.message || e))}</div>`;
     toast("以文件检索失败");
