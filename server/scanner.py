@@ -37,15 +37,22 @@ def file_info(path) -> dict | None:
     }
 
 
-def scan(paths, recursive: bool = True) -> tuple[list[dict], list[dict]]:
+def scan(paths, recursive: bool = True, include_ext=None) -> tuple[list[dict], list[dict]]:
     """展开路径列表。
 
     返回 (文件清单, 跳过清单)。
-    跳过项带 reason：not_found / unsupported / unreadable
+    跳过项带 reason：not_found / not_file / unreadable / unsupported / filtered
+
+    include_ext：只收这些后缀（如 [".txt", ".md"]）。
+                 写 "txt" 还是 ".txt" 都认（统一归一化）。
+                 None 或空 = 不筛 —— 按 config 支持的类型全收。
     """
     files: list[dict] = []
     skipped: list[dict] = []
     seen: set[str] = set()
+
+    exts = {"." + str(e).strip().lstrip(".").lower()
+            for e in (include_ext or []) if str(e).strip()}
 
     for raw in paths or []:
         p = Path(str(raw).strip().strip('"'))
@@ -69,6 +76,9 @@ def scan(paths, recursive: bool = True) -> tuple[list[dict], list[dict]]:
                 continue
             if info["modality"] == "other" or info["size"] == 0:
                 skipped.append({"path": info["path"], "reason": "unsupported"})
+                continue
+            if exts and q.suffix.lower() not in exts:
+                skipped.append({"path": info["path"], "reason": "filtered"})
                 continue
             if info["path"] in seen:
                 continue

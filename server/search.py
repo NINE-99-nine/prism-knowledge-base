@@ -5,6 +5,7 @@
 """
 import numpy as np
 
+import config
 from config import EMBED_DIM as _DEFAULT_DIM
 import settings
 from embedder import embed_text, from_blob, normalize
@@ -17,6 +18,40 @@ def _dim() -> int:
         return int(settings.get("embed_dim") or _DEFAULT_DIM)
     except (TypeError, ValueError):
         return _DEFAULT_DIM
+
+
+def _hit_tags(path: str, item_id: int) -> list[str]:
+    """取这条命中该显示的标签。
+
+    虚拟文件的标签统一挂在 chunk 0（标题片段）上，所以要转一手 ——
+    不这样做的话，语义命中（描述/配图片段）会看不到标签。
+    """
+    vid = db.vid_of_path(path)
+    if vid is not None:
+        cid = db.virtual_chunk0_id(vid)
+        if cid:
+            return db.item_tags(cid)
+    return db.item_tags(item_id)
+
+
+def _virt_meta(path: str) -> dict | None:
+    """虚拟文件：把伪路径 prism://virtual/<id> 换成人类可读的标题 / 封面 / 关联文件。
+
+    前端拿到 virt 就显示标题和封面图，而不是那串 prism:// 伪路径。
+    """
+    vid = db.vid_of_path(path)
+    if vid is None:
+        return None
+    vf = db.get_virtual(vid)
+    if not vf:
+        return None
+    return {
+        "vid": vid,
+        "title": vf.get("title") or "",
+        "cover": vf.get("cover") or "",
+        "description": vf.get("description") or "",
+        "related": vf.get("related") or [],
+    }
 
 
 def _score_rows(query_vec: np.ndarray, rows, top_k: int) -> list[dict]:
@@ -46,7 +81,8 @@ def _score_rows(query_vec: np.ndarray, rows, top_k: int) -> list[dict]:
             "modality": r["modality"],
             "text": r["chunk_text"] or "",
             "score": float(sims[int(i)]),
-            "tags": db.item_tags(r["id"]),
+            "tags": _hit_tags(r["path"], r["id"]),
+            "virt": _virt_meta(r["path"]),
         })
     return out
 
@@ -66,15 +102,20 @@ def search_text(library_id: int, query: str, top_k: int = 12,
 
 
 def _row_to_hit(r, score: float) -> dict:
-    return {
+    hit = {
         "id": r["id"],
         "path": r["path"],
         "chunk_index": r["chunk_index"],
         "modality": r["modality"],
         "text": r.get("text") or r.get("chunk_text") or "",
         "score": float(score),
-        "tags": db.item_tags(r["id"]),
+        "tags": _hit_tags(r["path"], r["id"]),
+        "virt": _virt_meta(r["path"]),
     }
+    # 虚拟文件的图片/音视频片段本身没有正文，卡片上就用描述兜底
+    if hit["virt"] and not hit["text"]:
+        hit["text"] = hit["virt"].get("description") or ""
+    return hit
 
 
 def search_keyword(library_id: int, query: str, top_k: int = 12,
@@ -96,9 +137,11 @@ def search_keyword(library_id: int, query: str, top_k: int = 12,
         n_name = name.lower().count(q)
         n_path = path.lower().count(q)
         n_text = text.lower().count(q)
-        if not (n_name or n_path or n_text):
+        n_tag = 1 if r.get("tag_hit") else 0          # 标签命中（用户手打的，权重给足）
+        if not (n_name or n_path or n_text or n_tag):
             continue
-        rank = (3 if n_name else 0) + (2 if n_path else 0) + (1 if n_text else 0)
+        rank = ((3 if n_name else 0) + (2 if n_path else 0)
+                + (1 if n_text else 0) + (2 if n_tag else 0))
         # 分数做成向量量级（0~1），且普遍高于语义分，混合时自然置顶
         score = min(0.999, 0.50 + 0.10 * rank + 0.01 * min(n_name + n_path + n_text, 5))
         scored.append((rank, n_name + n_path + n_text, path, r, score))
@@ -133,16 +176,51 @@ def search_mixed(library_id: int, query: str, top_k: int = 12,
     return out
 
 
+def filter_by_tags(hits: list[dict], library_id: int,
+                   tags: list[str] | None) -> list[dict]:
+    """按标签多选过滤（AND：同时带齐所选全部标签的文件才留下）。
+
+    标签只挂在**段**上，但用户想的是"这个文件"，所以按 path 判定。
+    tags 为空 → 原样返回，不做任何事（默认不干扰检索）。
+    """
+    allow = db.paths_with_all_tags(library_id, tags)
+    if allow is None:
+        return hits
+    return [h for h in hits if h.get("path") in allow]
+
+
+def filter_virtual(hits: list[dict], only: bool) -> list[dict]:
+    """「只看虚拟文件」这一类的过滤。
+
+    虚拟文件的各片段本身的 modality 是 text/image/audio/video，所以**不能**
+    当成第五种模态去等值过滤 —— 只能按伪路径前缀筛。
+    """
+    if not only:
+        return hits
+    return [h for h in hits if db.is_virtual_path(h.get("path"))]
+
+
 def search_any(library_id: int, query: str, top_k: int = 12,
                modality: str | None = None, group: bool = False,
-               mode: str = "mixed") -> list[dict]:
-    """检索入口：按模式分派。mode = semantic / keyword / mixed。"""
+               mode: str = "mixed", tags: list[str] | None = None) -> list[dict]:
+    """检索入口：按模式分派。mode = semantic / keyword / mixed。
+
+    modality 传 "virt" 时是「只看虚拟文件」—— 见 filter_virtual。
+    带标签过滤时先多取一些候选，过滤完再截到 top_k —— 否则
+    一过滤就只剩两三条，用户会以为"库里没有"。
+    """
     m = (mode or "mixed").lower()
+    only_virt = modality == "virt"
+    mod = None if only_virt else modality
+    n = max(top_k * 4, top_k) if (tags or only_virt) else top_k
     if m == "keyword":
-        return search_keyword(library_id, query, top_k, modality, group)
-    if m == "semantic":
-        return search_text(library_id, query, top_k, modality, group)
-    return search_mixed(library_id, query, top_k, modality, group)
+        out = search_keyword(library_id, query, n, mod, group)
+    elif m == "semantic":
+        out = search_text(library_id, query, n, mod, group)
+    else:
+        out = search_mixed(library_id, query, n, mod, group)
+    out = filter_virtual(out, only_virt)
+    return filter_by_tags(out, library_id, tags)[:top_k]
 
 
 def group_by_file(rows: list[dict], top_k: int, per_file_chunks: int = 5) -> list[dict]:
@@ -173,6 +251,7 @@ def group_by_file(rows: list[dict], top_k: int, per_file_chunks: int = 5) -> lis
             "text": best["text"],
             "score": best["score"],
             "tags": best["tags"],
+            "virt": best.get("virt"),
             # 新增：文件级信息
             "grouped": True,
             "hits": len(hits),
@@ -188,10 +267,13 @@ def group_by_file(rows: list[dict], top_k: int, per_file_chunks: int = 5) -> lis
 
 
 def search_by_vector(library_id: int, vec, top_k: int = 12,
-                     modality: str | None = None) -> list[dict]:
+                     modality: str | None = None,
+                     tags: list[str] | None = None) -> list[dict]:
     """拿一个现成的向量去库里搜（拖拽文件、以图搜图、任意模态互搜都走这里）。"""
     rows = db.all_vectors(library_id, modality)
-    return _score_rows(np.asarray(vec, dtype=np.float32), rows, top_k)
+    n = max(top_k * 4, top_k) if tags else top_k
+    hits = _score_rows(np.asarray(vec, dtype=np.float32), rows, n)
+    return filter_by_tags(hits, library_id, tags)[:top_k]
 
 
 def search_by_image(library_id: int, image_path: str, top_k: int = 12) -> list[dict]:
@@ -201,17 +283,79 @@ def search_by_image(library_id: int, image_path: str, top_k: int = 12) -> list[d
     return _score_rows(np.asarray(embed_image(image_path), dtype=np.float32), rows, top_k)
 
 
-def similar_to_item(library_id: int, item_id: int, top_k: int = 12) -> list[dict]:
-    """找与某个已有条目相似的其它条目（"像这张的还有吗"）。"""
+def similar_files(library_id: int, item_id: int, top_k: int = 12,
+                  block: int = 1024, max_src: int = 200) -> list[dict]:
+    """找「像这个文件」的**其它文件**（文件级，不是片段级）。
+
+    用户问「像这张的还有吗」，问的是**文件**。所以：
+
+      两个文件的相似度 = 它们所有片段两两余弦的**最大值**
+
+    两点理由：
+      · **为什么用全部片段**：一个文件可能有几十个片段（长文档切段、或虚拟文件的
+        标题/描述/配图/音频/视频），只挑其中一个片段去比会漏掉真正像的地方。
+      · **为什么取最大值而不是平均值**：只要**有一处很像**就算像；平均会被大量
+        不相关的片段稀释掉（一个 5 小时音频里有 1 分钟和它很像，就该算像）。
+
+    结果按 path 聚合，一条文件只出一次，带它的最高分和对应片段。
+    分块算 Q @ M.T 是为了别一次开出「源片段数 × 全库片段数」的矩阵。
+    """
     item = db.get_item(item_id)
-    if not item or not item.get("vec"):
+    if not item:
         return []
+    src_path = item["path"]
     rows = db.all_vectors(library_id, None)
-    return _score_rows(from_blob(item["vec"]), rows, top_k + 1)
+    if not rows:
+        return []
+
+    # 源文件自己的全部片段（虚拟文件的「标题」片段没有向量，会被 all_vectors 自动排除）
+    src_vecs = [r["vec"] for r in rows if r["path"] == src_path][:max_src]
+    if not src_vecs:
+        if not item.get("vec"):                 # 退路：至少用被点的那一条
+            return []
+        src_vecs = [item["vec"]]
+    Q = normalize(np.vstack([from_blob(b) for b in src_vecs]))
+
+    best: dict[str, dict] = {}
+    paths = [r["path"] for r in rows]
+    n = len(rows)
+    for s in range(0, n, block):
+        e = min(s + block, n)
+        M = normalize(np.vstack([from_blob(rows[i]["vec"]) for i in range(s, e)]))
+        sims = Q @ M.T                          # (源片段数) × (本块片段数)
+        col = sims.max(axis=0)                  # 每个目标片段：源里最像它的那一处
+        for j in range(e - s):
+            p = paths[s + j]
+            if p == src_path:                   # 自己不算自己的相似文件
+                continue
+            sc = float(col[j])
+            cur = best.get(p)
+            if cur is None or sc > cur["score"]:
+                best[p] = {"row": rows[s + j], "score": sc}
+
+    out: list[dict] = []
+    for x in sorted(best.values(), key=lambda v: -v["score"])[:max(1, top_k)]:
+        r = x["row"]
+        hit = {
+            "id": r["id"], "path": r["path"], "chunk_index": r["chunk_index"],
+            "modality": r["modality"], "text": r["chunk_text"] or "",
+            "score": x["score"], "tags": _hit_tags(r["path"], r["id"]),
+            "virt": _virt_meta(r["path"]),
+        }
+        if hit["virt"] and not hit["text"]:
+            hit["text"] = hit["virt"].get("description") or ""
+        out.append(hit)
+    return out
+
+
+def similar_to_item(library_id: int, item_id: int, top_k: int = 12) -> list[dict]:
+    """兼容旧名字 —— 实际走文件级比较（见 similar_files）。"""
+    return similar_files(library_id, item_id, top_k)
 
 
 def duplicates(library_id: int, threshold: float = 0.97, limit: int = 50,
-               same_file: bool = False) -> list[dict]:
+               same_file: bool = False, force: bool = False,
+               block: int = 512) -> dict:
     """近似重复检测：两两相似度超阈值的配对。
 
     两个必须做的过滤（否则结果毫无意义）：
@@ -221,38 +365,61 @@ def duplicates(library_id: int, threshold: float = 0.97, limit: int = 50,
          不去重的话同一对文件会刷屏。
 
     same_file=True 时才保留同文件配对（想看"这个文件内部有没有重复段落"时用）。
-    """
-    rows = db.all_vectors(library_id, None)
-    if len(rows) < 2:
-        return []
-    M = normalize(np.vstack([from_blob(r["vec"]) for r in rows]))
-    sims = M @ M.T
-    np.fill_diagonal(sims, -1.0)
 
+    🔴 规模护栏：这是 O(n²)，内存随 n² 涨（实测 16,684 段 ≈ 1.1 GB、50 秒以上）。
+       段数超过 config.DUPES_MAX_ITEMS 就不直接跑，先返回 blocked=True 让前端问一声，
+       force=True 才真算 —— 免得手一滑点进来就卡死。
+    🔴 分块计算：`M @ M.T` 会一次性开出 n×n 矩阵；改成按 block 行分块相乘，
+       峰值内存从 n² 降到 block×n（16,684 段时约 34 MB），大库能跑完而不是炸掉。
+    """
+    n_total = db.count_vectors(library_id)
+    out = {
+        "total": n_total,
+        "limit": int(config.DUPES_MAX_ITEMS),
+        "blocked": False,
+        "est_seconds": 0,
+        "count": 0,
+        "pairs": [],
+    }
+    if n_total > config.DUPES_MAX_ITEMS and not force:
+        out["blocked"] = True
+        out["est_seconds"] = max(2, int(n_total * n_total / 5.6e6))   # 经验值：16,684 段 ≈ 50 秒
+        return out
+    if n_total < 2:
+        return out
+
+    rows = db.all_vectors(library_id, None)
+    M = normalize(np.vstack([from_blob(r["vec"]) for r in rows]))
     paths = [r["path"] for r in rows]
     n = len(rows)
     best: dict[tuple, dict] = {}
 
-    for i in range(n):
-        for j in range(i + 1, n):
-            if paths[i] == paths[j] and not same_file:
-                continue                                   # 同文件的不同段，跳过
-            sc = float(sims[i, j])
-            if sc < threshold:
-                continue
-            if paths[i] == paths[j]:
-                key = ("same", paths[i], i, j)
-            else:
-                key = ("pair",) + tuple(sorted((paths[i], paths[j])))
-            if key not in best or sc > best[key]["score"]:
-                best[key] = {
-                    "a": {"id": rows[i]["id"], "path": paths[i],
-                          "chunk_index": rows[i]["chunk_index"]},
-                    "b": {"id": rows[j]["id"], "path": paths[j],
-                          "chunk_index": rows[j]["chunk_index"]},
-                    "score": sc,
-                    "same_file": paths[i] == paths[j],
-                }
+    for s in range(0, n, block):
+        e = min(s + block, n)
+        sims = M[s:e] @ M.T                     # 只有这一块，(e-s) × n
+        for li in range(e - s):
+            i = s + li
+            row = sims[li]
+            hits = np.nonzero(row[i + 1:] >= threshold)[0]   # 只看上三角
+            for k in hits:
+                j = i + 1 + int(k)
+                if paths[i] == paths[j] and not same_file:
+                    continue                    # 同文件的不同段，跳过
+                sc = float(row[j])
+                if paths[i] == paths[j]:
+                    key = ("same", paths[i], i, j)
+                else:
+                    key = ("pair",) + tuple(sorted((paths[i], paths[j])))
+                if key not in best or sc > best[key]["score"]:
+                    best[key] = {
+                        "a": {"id": rows[i]["id"], "path": paths[i],
+                              "chunk_index": rows[i]["chunk_index"]},
+                        "b": {"id": rows[j]["id"], "path": paths[j],
+                              "chunk_index": rows[j]["chunk_index"]},
+                        "score": sc,
+                        "same_file": paths[i] == paths[j],
+                    }
 
-    out = sorted(best.values(), key=lambda x: -x["score"])
-    return out[:max(1, limit)]
+    out["pairs"] = sorted(best.values(), key=lambda x: -x["score"])[:max(1, limit)]
+    out["count"] = len(out["pairs"])
+    return out

@@ -39,15 +39,14 @@ if not errorlevel 1 (
   exit /b 0
 )
 
+echo  正在启动 Prism...
 echo.
-echo   正在启动 Prism...
-echo   3 秒后会打开浏览器. 若已有界面标签, 切回去刷新即可
+echo  窗口会自动打开。若已有窗口/标签，切回去刷新即可
 echo.
 
-REM 3 秒后打开浏览器（给服务一点启动时间）
-start "" /min cmd /c "%SLEEP% /t 3 >nul & start http://127.0.0.1:8848"
-
-"%PY%" "%~dp0server\app.py"
+REM ---- 用桌面窗口启动（原生窗口能拿到拖入文件的绝对路径 → 拖进来就能入库）----
+REM 没装 pywebview 会自动退回「开系统浏览器」，行为与以前一致
+"%PY%" "%~dp0server\desktop.py"
 
 echo.
 echo   Prism 已停止. 窗口将在 15 秒后自动关闭, 按任意键可立即关闭

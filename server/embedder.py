@@ -8,7 +8,9 @@
     视频 → 抽帧后按「多张图」一次送入（服务端把它们聚合成一个向量）
 """
 import base64
+import hashlib
 import json
+import shutil
 import subprocess
 import urllib.error
 import urllib.request
@@ -65,12 +67,58 @@ def _b64(path) -> tuple[str, str]:
     return raw, p.suffix.lower().lstrip(".")
 
 
-def embed_image(path) -> list[float]:
+# 🔴 必须先转成 JPEG 才能嵌入的格式。
+# 实测（同内容、同尺寸对照）：AVIF / TIFF 会被 llama.cpp 的图片解码路径解出
+# **异常偏高的 token 数** —— 800×1420 的 AVIF 报 2061 token 直接被拒，
+# 而同尺寸、同内容的 JPEG 毫无问题（JPEG 甚至到 1000 万像素也照过）。
+# 结论：跟「图太大」无关，是这两种格式的解码路径有问题。转成 JPEG 后一切正常。
+IMAGE_TRANSCODE_EXT = {".avif", ".tif", ".tiff"}
+
+
+def _scratch(prefix: str = "img") -> Path:
+    """Prism 自己的临时目录。
+
+    🔴 绝不能用 tempfile.mkdtemp() 的默认位置 —— 那是
+       C:\\Users\\<用户>\\AppData\\Local\\Temp，属于「禁写 C 盘」的雷区。
+       统一落在 prism/data/tmp/ 下，由 app 的 cleanup_tmp 按既有策略清理。
+    """
+    import config
+    d = Path(config.DATA_DIR) / "tmp" / prefix
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _to_jpeg(path, tmpdir) -> Path:
+    """用 ffmpeg 把图片转成 JPEG。只用于上面那几种有问题的格式。"""
+    ff = _ffmpeg()
+    if not ff:
+        raise RuntimeError("要嵌入 AVIF / TIFF 图片，需要 ffmpeg（设置里可指定路径）")
+    out = Path(tmpdir) / (hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:12] + ".jpg")
+    r = subprocess.run([ff, "-y", "-v", "error", "-i", str(path), "-q:v", "2", str(out)],
+                       capture_output=True, text=True, timeout=600)
+    if not out.is_file() or out.stat().st_size == 0:
+        raise RuntimeError(f"图片转 JPEG 失败：{(r.stderr or '').strip()[:160]}")
+    return out
+
+
+def _embed_image_file(path) -> list[float]:
     raw, ext = _b64(path)
     mime = "jpeg" if ext in ("jpg", "jpeg") else ext
     d = _post({"model": settings.get("embed_model"), "input": [{"content": [
         {"type": "image_url", "image_url": {"url": f"data:image/{mime};base64,{raw}"}}]}]})
     return d["data"][0]["embedding"]
+
+
+def embed_image(path) -> list[float]:
+    p = Path(path)
+    if p.suffix.lower() in IMAGE_TRANSCODE_EXT:
+        tmp = _scratch("img") / hashlib.sha1(str(p).encode("utf-8")).hexdigest()[:12]
+        tmp.mkdir(parents=True, exist_ok=True)
+        try:
+            return _embed_image_file(_to_jpeg(p, tmp))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    return _embed_image_file(p)
 
 
 def embed_audio(path) -> list[float]:
@@ -114,7 +162,7 @@ def embed_video(path, frames: int = 0, width: int = 0, tmpdir: str = "") -> list
 
     抽帧文件落在给定 tmpdir（调用方负责清理），不碰源视频。
     """
-    import subprocess, tempfile, shutil
+    import subprocess, shutil
     import config
 
     ff = _ffmpeg()
@@ -131,7 +179,7 @@ def embed_video(path, frames: int = 0, width: int = 0, tmpdir: str = "") -> list
     scale = f"scale={w}:{w}:force_original_aspect_ratio=decrease"
     base_vf = scale if dur <= 0 else f"fps={max(n / dur, 0.01):.6f},{scale}"
 
-    tmp = Path(tmpdir) if tmpdir else Path(tempfile.mkdtemp(prefix="prism_vid_"))
+    tmp = Path(tmpdir) if tmpdir else _scratch("vid")
     tmp.mkdir(parents=True, exist_ok=True)
     pattern = str(tmp / "f_%03d.jpg")
 
@@ -201,6 +249,21 @@ def embed_blob(filename: str, raw: bytes, tmp_root=None) -> list[float]:
     ext = Path(filename).suffix.lower()
 
     if ext in config.IMAGE_EXT:
+        if ext in IMAGE_TRANSCODE_EXT:
+            # AVIF / TIFF 直接送会被解出异常 token 数，先落盘转 JPEG（用完即删）
+            tmp = Path(tmp_root) if tmp_root else _scratch("q")
+            tmp.mkdir(parents=True, exist_ok=True)
+            src = tmp / (hashlib.sha1(raw[:4096]).hexdigest()[:12] + ext)
+            try:
+                src.write_bytes(raw)
+                return _embed_image_file(_to_jpeg(src, tmp))
+            finally:
+                for f in tmp.glob("*"):
+                    try: f.unlink()
+                    except OSError: pass
+                if not tmp_root:
+                    try: tmp.rmdir()
+                    except OSError: pass
         mime = "jpeg" if ext in (".jpg", ".jpeg") else ext.lstrip(".")
         d = _post({"model": settings.get("embed_model"), "input": [{"content": [
             {"type": "image_url",
@@ -213,7 +276,7 @@ def embed_blob(filename: str, raw: bytes, tmp_root=None) -> list[float]:
         # 做法：落临时文件 → ffmpeg 截前 AUDIO_CHUNK_SECONDS 秒 → 嵌入；截取失败才退回整段。
         import hashlib
         ff = _ffmpeg()
-        tmp = Path(tmp_root) if tmp_root else Path(tempfile.mkdtemp(prefix="prism_q_"))
+        tmp = Path(tmp_root) if tmp_root else _scratch("q")
         tmp.mkdir(parents=True, exist_ok=True)
         # 文件名用 hash：源文件名可能含中文/空格/% 等，ffmpeg 处理起来易出岔子
         stem = hashlib.sha1(raw[:4096]).hexdigest()[:12]
@@ -244,7 +307,7 @@ def embed_blob(filename: str, raw: bytes, tmp_root=None) -> list[float]:
 
     if ext in config.VIDEO_EXT:
         import hashlib
-        tmp = Path(tmp_root) if tmp_root else Path(tempfile.mkdtemp(prefix="prism_q_"))
+        tmp = Path(tmp_root) if tmp_root else _scratch("q")
         tmp.mkdir(parents=True, exist_ok=True)
         f = tmp / (hashlib.sha1(raw[:4096]).hexdigest()[:12] + ext)
         try:

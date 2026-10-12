@@ -24,13 +24,7 @@ EDITABLE = {
 
 
 def find_ffmpeg() -> str:
-    """自动探测 ffmpeg。找到返回路径，找不到返回空串。
-
-    顺序：PATH → 常见安装位置。
-    找不到也不影响使用 —— 只有音频切段与视频抽帧需要它，
-    图片与文本的索引入库、检索都不依赖 ffmpeg。
-    也可以在界面的「设置」里手动填 ffmpeg 路径。
-    """
+    """自动探测 ffmpeg。找到返回路径，找不到返回空串。"""
     import os
     import shutil
     p = shutil.which("ffmpeg")

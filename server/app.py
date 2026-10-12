@@ -27,6 +27,7 @@ import importer
 import search
 import settings
 import config
+import virtual
 from config import HOST, PORT, WEB_DIR
 from embedder import health as embed_health
 
@@ -91,10 +92,17 @@ class Api:
     @staticmethod
     def library_files(lid: int, limit: int = 300, offset: int = 0,
                       modality: str | None = None) -> dict:
-        """按 path 聚合 —— 用户关心「库里有哪些文件」，不是「有哪些向量块」。"""
+        """按 path 聚合 —— 用户关心「库里有哪些文件」，不是「有哪些向量块」。
+
+        modality 传 "virt" 时是「只看虚拟文件」—— 虚拟文件的片段各自的 modality
+        是 text/image/audio/video，所以不能按 modality 等值过滤，要按伪路径前缀。
+        """
         c = db.conn()
         where, params = "WHERE library_id=?", [lid]
-        if modality:
+        if modality == "virt":
+            where += " AND path LIKE ?"
+            params.append(db.VIRTUAL_PREFIX + "%")
+        elif modality:
             where += " AND modality=?"
             params.append(modality)
         rows = c.execute(f"""
@@ -113,7 +121,23 @@ class Api:
             LIMIT ? OFFSET ?""", params + [limit, offset]).fetchall()
         total = c.execute(
             f"SELECT COUNT(DISTINCT path) n FROM items {where}", params).fetchone()["n"]
-        return {"total": total, "files": [dict(r) for r in rows]}
+
+        # 虚拟文件补上标题 / 封面 —— 浏览列表应该显示「指环王1」而不是 prism://virtual/3
+        out = []
+        vmeta: dict[int, dict] = {}
+        for r in rows:
+            d = dict(r)
+            vid = db.vid_of_path(d.get("path"))
+            if vid is not None:
+                if not vmeta:
+                    vmeta = db.virtual_meta_map(lid)
+                info = vmeta.get(vid)
+                if info:
+                    d["virt_title"] = info.get("title") or ""
+                    d["virt_cover"] = info.get("cover") or ""
+                    d["virt_description"] = info.get("description") or ""
+            out.append(d)
+        return {"total": total, "files": out}
 
     @staticmethod
     def file_chunks(lid: int, path: str) -> dict:
@@ -200,8 +224,13 @@ class Api:
             paths = [paths]
         if not paths:
             raise ValueError("没有要导入的路径")
-        job = importer.start_import(lid, paths, bool(body.get("recursive", True)))
-        return {"job_id": job}
+        # include_ext：只收这些后缀（前端「导入格式」筛选用）。空 = 不筛。
+        raw_ext = body.get("include_ext") or []
+        if isinstance(raw_ext, str):
+            raw_ext = [e for e in raw_ext.replace(";", ",").split(",") if e.strip()]
+        include_ext = [str(e).strip() for e in raw_ext if str(e).strip()] or None
+        job = importer.start_import(lid, paths, bool(body.get("recursive", True)), include_ext)
+        return {"job_id": job, "include_ext": include_ext or []}
 
     @staticmethod
     def job(job_id: str) -> dict:
@@ -225,7 +254,8 @@ class Api:
         if mode not in ("semantic", "keyword", "mixed"):
             mode = "mixed"
         res = search.search_any(lid, q, int(body.get("top_k") or 12),
-                                body.get("modality") or None, grouped, mode)
+                                body.get("modality") or None, grouped, mode,
+                                body.get("tags") or None)
         return {"query": q, "mode": mode, "count": len(res),
                 "grouped": grouped, "results": res}
 
@@ -248,7 +278,8 @@ class Api:
         tmp_root = config.DATA_DIR / "tmp" / "q"
         vec = embedder.embed_blob(filename, raw, tmp_root=tmp_root)
         res = search.search_by_vector(lid, vec, int(body.get("top_k") or 12),
-                                      body.get("modality") or None)
+                                      body.get("modality") or None,
+                                      body.get("tags") or None)
         return {"query": filename, "count": len(res),
                 "size": len(raw), "results": res}
 
@@ -270,11 +301,11 @@ class Api:
 
     @staticmethod
     def duplicates(body: dict) -> dict:
-        res = search.duplicates(int(body.get("library_id") or 0),
-                                float(body.get("threshold") or 0.97),
-                                int(body.get("limit") or 50),
-                                bool(body.get("same_file")))
-        return {"count": len(res), "pairs": res}
+        return search.duplicates(int(body.get("library_id") or 0),
+                                 float(body.get("threshold") or 0.97),
+                                 int(body.get("limit") or 50),
+                                 bool(body.get("same_file")),
+                                 bool(body.get("force")))
 
     # ---- 条目 ----
     @staticmethod
@@ -312,6 +343,63 @@ class Api:
         return db.all_tags()
 
     @staticmethod
+    def library_tags(lid: int) -> dict:
+        """某个库里用到的标签 + 各挂了多少文件（前端标签条用）。"""
+        return {"library_id": lid, "tags": db.tags_with_counts(lid)}
+
+    # ---------------------------------------------------------- 虚拟文件
+
+    @staticmethod
+    def virtual_list(lid: int) -> dict:
+        return {"library_id": lid, "items": db.list_virtuals(lid)}
+
+    @staticmethod
+    def virtual_get(vid: int) -> dict:
+        v = virtual.get_full(vid)
+        if v is None:
+            raise ValueError("虚拟文件不存在")
+        return v
+
+    @staticmethod
+    def virtual_create(lid: int, body: dict) -> dict:
+        return virtual.create(lid, body.get("title") or "", body.get("description") or "",
+                              body.get("assets") or [], body.get("related") or [])
+
+    @staticmethod
+    def virtual_update(vid: int, body: dict) -> dict:
+        return virtual.update(vid,
+                              title=body.get("title"),
+                              description=body.get("description"),
+                              assets=body.get("assets"),
+                              related=body.get("related"),
+                              cover=body.get("cover"))
+
+    @staticmethod
+    def virtual_delete(vid: int) -> dict:
+        return virtual.delete(vid)
+
+    @staticmethod
+    def virtual_tags(vid: int, body: dict) -> dict:
+        """给虚拟文件打标签。
+
+        标签是**片段级**的东西，一个虚拟文件有多个片段（标题/描述/配图…），
+        所以统一落在 chunk 0（标题片段）上 —— 检索时再盖到所有片段
+        （见 search._hit_tags），这样语义命中的配图卡片也能显示标签。
+        """
+        cid = db.virtual_chunk0_id(vid)
+        if not cid:
+            raise ValueError("虚拟文件还没有片段（先保存一次）")
+        tags = body.get("tags")
+        if tags is not None:
+            for t in db.item_tags(cid):
+                db.remove_tag(cid, t)
+            for t in tags:
+                t = (t or "").strip()
+                if t:
+                    db.add_tag(cid, t)
+        return {"tags": db.item_tags(cid), "tag_item_id": cid}
+
+    @staticmethod
     def rescan(lid: int) -> dict:
         return importer.rescan_missing(lid)
 
@@ -347,7 +435,10 @@ class Api:
         script = Path(__file__).resolve().parent / "pick.py"
         try:
             r = subprocess.run([sys.executable, str(script), mode, str(Path.home()), kind],
-                               capture_output=True, text=True, timeout=600)
+                               capture_output=True, timeout=600,
+                               # 🔴 必须显式 UTF-8：默认按系统 locale（中文 Windows 是 GBK）
+                               # 解码，pick.py 输出的中文路径会变乱码甚至解码失败。
+                               encoding="utf-8", errors="replace")
         except subprocess.TimeoutExpired:
             return {"paths": []}
         out = (r.stdout or "").strip().splitlines()
@@ -360,12 +451,19 @@ class Api:
 
     @staticmethod
     def reveal(path: str) -> dict:
-        """在资源管理器中定位文件。"""
+        """在资源管理器中定位。
+
+        文件夹是直接**打开**它（explorer /select, 对文件夹只会选中它、
+        看起来像「没反应」）；文件才是选中高亮。
+        """
         p = Path(path)
         if not p.exists():
-            raise ValueError("文件不存在")
+            raise ValueError("路径不存在")
         if os.name == "nt":
-            subprocess.Popen(["explorer", "/select,", str(p)])
+            if p.is_dir():
+                subprocess.Popen(["explorer", str(p)])
+            else:
+                subprocess.Popen(["explorer", "/select,", str(p)])
         return {"ok": True}
 
     @staticmethod
@@ -379,7 +477,10 @@ class Api:
         if not p.exists():
             raise ValueError("文件不存在")
         if not db.path_is_indexed(str(p)):
-            raise ValueError("该路径不在任何库的索引里，拒绝打开")
+            # 虚拟文件关联的本地大文件、以及它挂的配图/音视频，都不在 items.path 里
+            # （那儿存的是伪路径），但都是用户自己指定的 —— 放行。
+            if not virtual.path_is_asset(str(p)) and not virtual.path_is_asset(path):
+                raise ValueError("该路径不在任何库的索引里，拒绝打开")
         if os.name == "nt":
             os.startfile(str(p))          # noqa: S606 - 仅对已索引文件调用
         else:
@@ -428,8 +529,32 @@ def to_utf8(data: bytes) -> bytes:
     return data
 
 
+class _Server(ThreadingHTTPServer):
+    """backlog 默认只有 5（socketserver.request_queue_size）——
+    浏览器标签 + 桌面窗口一起开时会瞬间占满，新连接**直接被内核拒绝**，
+    表现出来就是「端口明明在听、却 Connection refused」这种假死。
+    调大到 128，并让连接线程跟着进程退出。"""
+    request_queue_size = 128
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "Prism/1.0"
+
+    # 🔴 必须显式写 HTTP/1.1。
+    # 默认是 HTTP/1.0 —— 每个请求都要新开一条 TCP 连接、占一个服务线程。
+    # 桌面窗口（WebView2/Chromium）打开浏览页时会**同时**拉上百张缩略图，
+    # 于是瞬间冒出上百个线程，GIL 互相打架，accept 循环被饿死 →
+    # 表现就是「狂点鼠标就卡死」并且「左侧库列表加载不出来」。
+    # 1.1 允许 keep-alive，浏览器每个域名只复用 ~6 条连接。
+    protocol_version = "HTTP/1.1"
+
+    # 空闲的 keep-alive 连接 30 秒后自动关掉，不让它一直占着线程
+    timeout = 30
+
+    def log_message(self, fmt, *args):          # 默认会把每个请求打到 stderr，太吵
+        pass
 
     # ---- 工具 ----
     def _send(self, code: int, body: bytes, ctype: str = "application/json; charset=utf-8"):
@@ -503,6 +628,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(Api.rescan(lid))
                 if len(seg) == 3 and seg[2] == "missing" and m == "GET":
                     return self._json(Api.missing(lid))
+                if len(seg) == 3 and seg[2] == "tags" and m == "GET":
+                    return self._json(Api.library_tags(lid))
+                if len(seg) == 3 and seg[2] == "virtual" and m == "GET":
+                    return self._json(Api.virtual_list(lid))
+                if len(seg) == 3 and seg[2] == "virtual" and m == "POST":
+                    return self._json(Api.virtual_create(lid, self._body()))
                 if len(seg) == 3 and seg[2] == "purge-missing" and m == "POST":
                     return self._json(Api.purge_missing(lid))
 
@@ -533,6 +664,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(Api.items_move(self._body()))
             if seg == ["items", "copy"] and m == "POST":
                 return self._json(Api.items_copy(self._body()))
+
+            if len(seg) >= 2 and seg[0] == "virtual":
+                vid = int(seg[1])
+                if len(seg) == 2 and m == "GET":
+                    return self._json(Api.virtual_get(vid))
+                if len(seg) == 2 and m in ("PATCH", "POST"):
+                    return self._json(Api.virtual_update(vid, self._body()))
+                if len(seg) == 2 and m == "DELETE":
+                    return self._json(Api.virtual_delete(vid))
+                if len(seg) == 3 and seg[2] == "tags" and m in ("POST", "PATCH"):
+                    return self._json(Api.virtual_tags(vid, self._body()))
 
             if len(seg) >= 2 and seg[0] == "items":
                 item_id = int(seg[1])
@@ -625,7 +767,12 @@ class Handler(BaseHTTPRequestHandler):
         row = db.conn().execute(
             f"SELECT 1 FROM items WHERE {q} LIMIT 1", tuple(variants)).fetchone()
         if not row:
-            return self._err("该文件不在任何库中（安全限制）", 403)
+            # 虚拟文件的配图/音视频、以及它关联的本地文件，挂的是真实路径，
+            # 但 items.path 里存的是伪路径 prism://virtual/<id> —— 额外放行它们，
+            # 否则结果卡片上的封面图会被 403 挡住。
+            if not virtual.path_is_asset(str(p.resolve())) and \
+                    not virtual.path_is_asset(raw_path):
+                return self._err("该文件不在任何库中（安全限制）", 403)
 
         ctype = mimetypes.guess_type(str(p))[0] or "application/octet-stream"
         is_text = (ctype.startswith("text/")
@@ -648,6 +795,7 @@ class Handler(BaseHTTPRequestHandler):
             if start > end or start >= total:
                 self.send_response(416)
                 self.send_header("Content-Range", f"bytes */{total}")
+                self.send_header("Content-Length", "0")   # 🔴 HTTP/1.1 下没有它浏览器会一直等 body
                 self.end_headers()
                 return
             partial = True
@@ -790,7 +938,7 @@ def main():
         "",
     ]
     print("\n".join(banner), flush=True)
-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    srv = _Server((HOST, PORT), Handler)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

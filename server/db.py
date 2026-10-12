@@ -49,6 +49,22 @@ CREATE INDEX IF NOT EXISTS idx_items_path     ON items(path);
 CREATE INDEX IF NOT EXISTS idx_items_status   ON items(status);
 CREATE INDEX IF NOT EXISTS idx_items_modal    ON items(modality);
 
+-- 虚拟文件：内部自建的「条目」，用不大的附加信息（标题/描述/配图/音视频）
+-- 去关联本地的大文件。它自己不占 items 的额外结构 —— 它的每个片段都写进 items，
+-- 且**共用一个伪路径** prism://virtual/<id>，这样「按文件」合并、检索、标签全部直接复用。
+CREATE TABLE IF NOT EXISTS virtual_files (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  library_id  INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+  title       TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  cover       TEXT NOT NULL DEFAULT '',
+  related     TEXT NOT NULL DEFAULT '[]',
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_vf_lib ON virtual_files(library_id);
+
 CREATE TABLE IF NOT EXISTS tags (
     id   INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE
@@ -268,6 +284,8 @@ def upsert_item(library_id: int, path: str, chunk_index: int, modality: str,
                 vec_bytes: bytes, chunk_text: str = "", size: int = 0,
                 mtime: float = 0.0, fingerprint: str = "", meta: dict | None = None) -> int:
     c = conn()
+    # 允许 vec=None：虚拟文件的「标题」片段**故意不走向量**（标题只触发关键词），
+    # 存成 SQL NULL，这样 all_vectors() 的 `vec IS NOT NULL` 会自动把它排除。
     cur = c.execute("""
         INSERT INTO items(library_id, path, chunk_index, modality, chunk_text, size, mtime,
                           fingerprint, status, meta, vec, added_at)
@@ -278,7 +296,7 @@ def upsert_item(library_id: int, path: str, chunk_index: int, modality: str,
             meta=excluded.meta, vec=excluded.vec, added_at=excluded.added_at
     """, (library_id, path, chunk_index, modality, chunk_text, size, mtime,
           fingerprint, json.dumps(meta or {}, ensure_ascii=False),
-          sqlite3.Binary(vec_bytes), _now()))
+          sqlite3.Binary(vec_bytes) if vec_bytes else None, _now()))
     c.commit()
     return cur.lastrowid
 
@@ -326,12 +344,18 @@ def search_keyword_rows(library_id: int, query: str,
     if not q:
         return []
     pat = f"%{q}%"
-    sql = ("SELECT id, path, chunk_index, modality, chunk_text "
-           "FROM items WHERE library_id=? AND status='active' "
-           "AND (lower(path) LIKE ? OR lower(COALESCE(chunk_text,'')) LIKE ?)")
-    args: list = [library_id, pat, pat]
+    # 🔴 第三路：标签。用户给文件打的标签必须能被搜到 —— 否则标签就是死数据。
+    #    之前这里只查 path / chunk_text，导致「给图片打了标签却搜不出来」。
+    sql = ("SELECT i.id, i.path, i.chunk_index, i.modality, i.chunk_text, "
+           "  (EXISTS (SELECT 1 FROM item_tags it JOIN tags t ON t.id = it.tag_id "
+           "           WHERE it.item_id = i.id AND lower(t.name) LIKE ?)) AS tag_hit "
+           "FROM items i WHERE i.library_id=? AND i.status='active' "
+           "AND (lower(i.path) LIKE ? OR lower(COALESCE(i.chunk_text,'')) LIKE ? "
+           "     OR EXISTS (SELECT 1 FROM item_tags it JOIN tags t ON t.id = it.tag_id "
+           "                WHERE it.item_id = i.id AND lower(t.name) LIKE ?))")
+    args: list = [pat, library_id, pat, pat, pat]
     if modality:
-        sql += " AND modality=?"
+        sql += " AND i.modality=?"
         args.append(modality)
     sql += " LIMIT ?"
     args.append(limit)
@@ -372,7 +396,20 @@ def known_fingerprints(library_id: int) -> dict[str, str]:
     return {r["path"]: r["fingerprint"] for r in rows}
 
 
-def all_vectors(library_id: int, modality: str | None = None):
+def count_vectors(library_id: int, modality: str | None = None) -> int:
+    """数一下参与向量比对的行数。
+
+    近似重复的规模护栏要用它 —— 别为了拿个数就把全部向量 load 进内存。
+    """
+    sql = "SELECT COUNT(*) n FROM items WHERE library_id=? AND status='active' AND vec IS NOT NULL"
+    args: list = [library_id]
+    if modality:
+        sql += " AND modality=?"
+        args.append(modality)
+    return conn().execute(sql, args).fetchone()["n"]
+
+
+def all_vectors(library_id: int, modality: str | None = None) -> list[sqlite3.Row]:
     """取某库全部 (id, path, chunk_index, modality, chunk_text, vec_blob)。"""
     sql = ("SELECT id, path, chunk_index, modality, chunk_text, vec "
            "FROM items WHERE library_id=? AND status='active' AND vec IS NOT NULL")
@@ -464,6 +501,179 @@ def item_tags(item_id: int) -> list[str]:
 
 def all_tags() -> list[str]:
     return [r["name"] for r in conn().execute("SELECT name FROM tags ORDER BY name").fetchall()]
+
+
+def tags_with_counts(library_id: int | None = None) -> list[dict]:
+    """所有标签 + 各自挂了多少个**文件**（按 path 去重），条目多的排前面。
+
+    只数当前库里的，这样标签条跟着切库变 —— 在电影库里不该看到图片库的标签。
+    同一文件的多段各挂一次同一个标签时只算 1，避免数字虚高。
+    """
+    if library_id is None:
+        rows = conn().execute(
+            "SELECT t.name AS name, COUNT(DISTINCT i.path) AS n "
+            "FROM item_tags it JOIN tags t ON t.id = it.tag_id "
+            "JOIN items i ON i.id = it.item_id "
+            "WHERE i.status='active' GROUP BY t.name ORDER BY n DESC, t.name").fetchall()
+    else:
+        rows = conn().execute(
+            "SELECT t.name AS name, COUNT(DISTINCT i.path) AS n "
+            "FROM item_tags it JOIN tags t ON t.id = it.tag_id "
+            "JOIN items i ON i.id = it.item_id "
+            "WHERE i.library_id=? AND i.status='active' "
+            "GROUP BY t.name ORDER BY n DESC, t.name", (library_id,)).fetchall()
+    return [{"name": r["name"], "count": r["n"]} for r in rows]
+
+
+def paths_with_all_tags(library_id: int, tags: list[str]) -> set[str] | None:
+    """同时带齐**全部**所选标签的文件路径集合。
+
+    语义说明：标签挂在段（item）上，但用户心里想的是"这个文件"，
+    所以先按 path 汇总出「每个文件有哪些标签」，再要求**包含所选的全部标签**（AND）。
+    多选就是"同时满足"—— 选「白发」+「校服」只出同时有两个标签的文件。
+
+    tags 为空 → 返回 None（表示不做过滤，调用方直接放行）。
+    """
+    want = {t.strip().lower() for t in (tags or []) if t and t.strip()}
+    if not want:
+        return None
+    rows = conn().execute(
+        "SELECT DISTINCT i.path AS path, lower(t.name) AS name "
+        "FROM item_tags it JOIN tags t ON t.id = it.tag_id "
+        "JOIN items i ON i.id = it.item_id "
+        "WHERE i.library_id=? AND i.status='active'", (library_id,)).fetchall()
+    have: dict[str, set[str]] = {}
+    for r in rows:
+        have.setdefault(r["path"], set()).add(r["name"])
+    return {p for p, names in have.items() if want <= names}
+
+
+# ------------------------------------------------------------------ 虚拟文件
+
+VIRTUAL_PREFIX = "prism://virtual/"
+
+
+def vpath(vid: int) -> str:
+    """虚拟文件在 items 表里的伪路径 —— **它的所有片段共用这一条**，
+    这样「按文件」合并 / 检索 / 标签 / 去重全部零改动直接复用。"""
+    return f"{VIRTUAL_PREFIX}{vid}"
+
+
+def is_virtual_path(path: str | None) -> bool:
+    return bool(path) and str(path).startswith(VIRTUAL_PREFIX)
+
+
+def vid_of_path(path: str | None) -> int | None:
+    if not is_virtual_path(path):
+        return None
+    try:
+        return int(str(path)[len(VIRTUAL_PREFIX):])
+    except (TypeError, ValueError):
+        return None
+
+
+def _vf_row(r) -> dict:
+    d = dict(r)
+    try:
+        d["related"] = json.loads(d.get("related") or "[]")
+    except (TypeError, ValueError):
+        d["related"] = []
+    return d
+
+
+def create_virtual(library_id: int, title: str, description: str = "",
+                   cover: str = "", related: list[str] | None = None) -> int:
+    c = conn()
+    now = _now()
+    cur = c.execute(
+        "INSERT INTO virtual_files(library_id, title, description, cover, related, "
+        "created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+        (library_id, title, description, cover,
+         json.dumps(related or [], ensure_ascii=False), now, now))
+    c.commit()
+    return cur.lastrowid
+
+
+def get_virtual(vid: int) -> dict | None:
+    r = conn().execute("SELECT * FROM virtual_files WHERE id=?", (vid,)).fetchone()
+    return _vf_row(r) if r else None
+
+
+def list_virtuals(library_id: int) -> list[dict]:
+    rows = conn().execute(
+        "SELECT * FROM virtual_files WHERE library_id=? ORDER BY id DESC",
+        (library_id,)).fetchall()
+    return [_vf_row(r) for r in rows]
+
+
+def update_virtual(vid: int, **fields) -> bool:
+    allowed = ("title", "description", "cover", "related", "library_id")
+    sets: list[str] = []
+    args: list = []
+    for k, v in fields.items():
+        if k not in allowed:
+            continue
+        if k == "related":
+            v = json.dumps(v or [], ensure_ascii=False)
+        sets.append(f"{k}=?")
+        args.append(v)
+    if not sets:
+        return False
+    sets.append("updated_at=?")
+    args.append(_now())
+    args.append(vid)
+    c = conn()
+    c.execute(f"UPDATE virtual_files SET {', '.join(sets)} WHERE id=?", args)
+    c.commit()
+    return True
+
+
+def delete_virtual(vid: int) -> None:
+    """删虚拟文件：元数据 + 伪造路径下的全部片段（含向量）。
+    **真实媒体文件一个都不动** —— 我们只存索引。"""
+    c = conn()
+    row = c.execute("SELECT library_id FROM virtual_files WHERE id=?", (vid,)).fetchone()
+    if row:
+        c.execute("DELETE FROM items WHERE library_id=? AND path=?",
+                  (row["library_id"], vpath(vid)))
+    c.execute("DELETE FROM virtual_files WHERE id=?", (vid,))
+    c.commit()
+
+
+def virtual_chunk0_id(vid: int) -> int | None:
+    """虚拟文件「标题片段」（chunk 0）的 item id。
+
+    标签是挂在**片段**上的，而一个虚拟文件有多个片段（标题/描述/配图…）。
+    要让「给这个虚拟文件打标签」有一个确定的落点，就统一挂在 chunk 0 上 ——
+    检索时再把标签读出来盖到所有片段上（见 search._hit_tags）。
+    """
+    r = conn().execute(
+        "SELECT i.id FROM items i JOIN virtual_files v ON v.library_id = i.library_id "
+        "WHERE i.path = ? AND i.chunk_index = 0", (vpath(vid),)).fetchone()
+    return r["id"] if r else None
+
+
+def virtual_items(vid: int) -> list[dict]:
+    """这个虚拟文件当前的片段（按 chunk_index 排）。"""
+    r = conn().execute("SELECT library_id FROM virtual_files WHERE id=?", (vid,)).fetchone()
+    if not r:
+        return []
+    rows = conn().execute(
+        "SELECT id, chunk_index, modality, chunk_text, meta FROM items "
+        "WHERE library_id=? AND path=? ORDER BY chunk_index",
+        (r["library_id"], vpath(vid))).fetchall()
+    return [dict(x) for x in rows]
+
+
+def virtual_meta_map(library_id: int) -> dict[int, dict]:
+    """{vid: {title, cover, description}} —— 检索结果把伪路径换成人类可读的标题/封面。"""
+    out: dict[int, dict] = {}
+    for r in conn().execute(
+            "SELECT id, title, cover, description FROM virtual_files WHERE library_id=?",
+            (library_id,)):
+        out[r["id"]] = {"title": r["title"] or "", "cover": r["cover"] or "",
+                        "description": r["description"] or ""}
+    return out
 
 
 def stats() -> dict:

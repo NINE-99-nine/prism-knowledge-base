@@ -25,6 +25,23 @@
   --gap: 1.5rem;
   --font: "Inter", "Helvetica Neue", -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
   --mono: "SFMono-Regular", "Cascadia Mono", Consolas, monospace;
+  color-scheme: light;
+}
+
+/* 夜间：蓝黑。
+   只覆盖上面那几个变量 —— 组件样式全部走 token，一处都不用改。 */
+:root[data-theme="night"] {
+  --ink:      #dde6ef;
+  --ink-2:    #a9b8c6;
+  --ink-3:    #74869a;
+  --line:     #22303f;
+  --line-2:   #17222e;
+  --paper:    #0a0f16;
+  --paper-2:  #101827;
+  --accent:   #79a6d6;      /* 冷蓝（夜间用亮色，白天那支莫兰迪灰绿在黑底上会糊） */
+  --accent-2: #9dc0e4;
+  --warn:     #cf9469;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -65,6 +82,14 @@ html, body {
 }
 .tab:hover { color: var(--ink); }
 .tab.on { color: var(--ink); border-bottom-color: var(--ink); }
+
+/* 返回上一步（Ctrl+Z）：常驻在标签左侧；没有可返回的步骤时淡出 */
+.btn-back {
+  padding: 0.1rem 0.55rem; line-height: 1.4; font-size: 0.95rem;
+  color: var(--ink-3); border: 1px solid var(--line);
+}
+.btn-back:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-3); }
+.btn-back:disabled { opacity: 0.28; cursor: default; }
 
 .status { display: flex; align-items: center; gap: 0.5rem; color: var(--ink-3); font-size: 0.8rem; font-family: var(--mono); }
 .dot { width: 6px; height: 6px; background: var(--line); display: inline-block; }
@@ -108,13 +133,108 @@ html, body {
 .workspace { overflow-y: auto; padding: var(--gap); display: flex; flex-direction: column; gap: var(--gap); min-height: 0; }
 .view { display: flex; flex-direction: column; gap: var(--gap); }
 
-.searchbar { display: grid; grid-template-columns: 1fr 9rem auto; gap: 0.75rem; }
+/* 检索区：两层 —— 主行（输入 + 动作）／选项行（类型 · 方式 · 合并 · 条数）
+   选项行是一整条安静的小控件带，不再和输入框挤在同一行。 */
+.searchbar { display: flex; flex-direction: column; gap: 0.6rem; }
+.sb-main { display: grid; grid-template-columns: 1fr auto auto auto; gap: 0.5rem; }
+.sb-opts { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem; }
+.sb-sep { width: 1px; height: 0.95rem; background: var(--line); }
+.sb-num { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; color: var(--ink-3); }
+.sb-num select {
+  font: inherit; font-size: 0.72rem; padding: 0.2rem 0.3rem;
+  border: 1px solid var(--line); background: var(--paper-2); color: var(--ink-2);
+  border-radius: 0; outline: none;
+}
+
 .searchbar input, .searchbar select, .browse-tools select {
   font: inherit; padding: 0.6rem 0.75rem;
   border: 1px solid var(--line); background: var(--paper-2); color: var(--ink);
   border-radius: 0; outline: none;
 }
 .searchbar input:focus, select:focus { border-color: var(--accent); }
+
+/* 分段控件：一组小按钮里只有一个亮 —— 取代下拉，当前状态一眼可见 */
+.seg { display: inline-flex; border: 1px solid var(--line); background: var(--paper-2); }
+.seg-i {
+  font: inherit; font-size: 0.72rem; line-height: 1.2;
+  padding: 0.3rem 0.62rem; border: 0; background: transparent;
+  color: var(--ink-3); cursor: pointer; white-space: nowrap;
+}
+.seg-i + .seg-i { border-left: 1px solid var(--line-2); }
+.seg-i:hover { color: var(--ink); background: var(--paper); }
+.seg-i.on { background: var(--ink); color: var(--paper-2); }
+.seg-sm .seg-i { font-size: 0.68rem; padding: 0.24rem 0.5rem; }
+
+/* 圆点开关：一个小方点 + 文字（取代长条 checkbox） */
+.dot-toggle {
+  display: inline-flex; align-items: center; gap: 0.42rem;
+  font: inherit; font-size: 0.72rem; color: var(--ink-3);
+  background: none; border: 0; padding: 0.2rem 0.05rem; cursor: pointer;
+}
+.dot-toggle i {
+  width: 9px; height: 9px; display: inline-block;
+  border: 1px solid var(--line); background: transparent;
+  transition: background .12s, border-color .12s;
+}
+.dot-toggle.on { color: var(--ink); }
+.dot-toggle.on i { background: var(--accent); border-color: var(--accent); }
+.dot-toggle:hover { color: var(--ink); }
+.dot-toggle:hover i { border-color: var(--ink-3); }
+
+/* 顶栏右侧：主题切换 + 状态 */
+.topright { display: flex; align-items: center; gap: 0.85rem; }
+.btn-theme {
+  padding: 0.12rem 0.5rem; font-size: 0.95rem; line-height: 1.45;
+  color: var(--ink-3); border: 1px solid var(--line);
+}
+.btn-theme:hover { color: var(--ink); border-color: var(--ink-3); }
+.btn-icon { padding: 0.6rem 0.85rem; line-height: 1; }
+
+/* ------------------------------------------------ 导入格式筛选 */
+.dropzone { position: relative; }
+.btn-format { display: inline-flex; align-items: center; gap: 0.35rem; }
+.btn-format b { color: var(--ink); font-weight: 500; }
+.btn-format .caret { font-size: 0.66rem; opacity: 0.55; }
+.btn-format.on { color: var(--ink); border-color: var(--ink-3); }
+
+.format-panel {
+  position: absolute; right: 0; top: calc(100% + 0.45rem); z-index: 40;
+  width: min(31rem, 90vw);
+  border: 1px solid var(--line); background: var(--paper-2);
+  padding: 0.85rem; display: grid; gap: 0.55rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+}
+.fp-row { display: flex; align-items: center; gap: 0.55rem; }
+.fp-title { font-size: 0.7rem; color: var(--ink-3); flex: 0 0 2.2rem; }
+.fp-quicks { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+.fp-quick {
+  font: inherit; font-size: 0.72rem; line-height: 1.3; padding: 0.28rem 0.62rem;
+  border: 1px solid var(--line); background: transparent; color: var(--ink-3); cursor: pointer;
+}
+.fp-quick:hover { color: var(--ink); border-color: var(--ink-3); }
+.fp-quick.on { background: var(--ink); color: var(--paper-2); border-color: var(--ink); }
+#fp-input {
+  font: inherit; font-size: 0.72rem; padding: 0.32rem 0.5rem; flex: 1;
+  border: 1px solid var(--line); background: var(--paper); color: var(--ink); outline: none;
+}
+#fp-input:focus { border-color: var(--accent); }
+.fp-suggest { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.fp-sg {
+  font: inherit; font-size: 0.66rem; padding: 0.14rem 0.42rem; cursor: pointer;
+  border: 1px solid var(--line-2); color: var(--ink-3); background: transparent;
+}
+.fp-sg:hover { color: var(--accent); border-color: var(--accent); }
+.fp-sg.used { opacity: 0.3; cursor: default; }
+.fp-picked { display: flex; flex-wrap: wrap; gap: 0.3rem; min-height: 1.5rem; align-items: center; }
+.fp-chip {
+  display: inline-flex; align-items: center; gap: 0.32rem;
+  font-size: 0.68rem; padding: 0.16rem 0.42rem;
+  background: var(--line-2); color: var(--ink-2);
+}
+.fp-chip button { border: 0; background: none; color: var(--ink-3); cursor: pointer; font: inherit; padding: 0; line-height: 1; }
+.fp-chip button:hover { color: var(--warn); }
+.fp-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+.fp-hint { font-size: 0.66rem; color: var(--ink-3); }
 .btn {
   font: inherit; padding: 0.6rem 1.4rem; border: 1px solid var(--ink);
   background: var(--ink); color: var(--paper-2); cursor: pointer; border-radius: 0;
@@ -166,6 +286,81 @@ html, body {
 .card .tags { display: flex; flex-wrap: wrap; gap: 0.25rem; }
 .tag { font-size: 0.65rem; border: 1px solid var(--line); padding: 0 0.3rem; color: var(--ink-2); }
 
+/* 抽屉里可删的标签：悬停变警示色，点 ✕ 去掉 */
+.tag-del { cursor: pointer; padding-right: 0.15rem; }
+.tag-del i { font-style: normal; margin-left: 0.25rem; color: var(--ink-3); }
+.tag-del:hover { border-color: var(--warn); color: var(--warn); }
+.tag-del:hover i { color: var(--warn); }
+
+/* ---------------------------------------------------------------- 标签条 */
+/* 检索栏下方一行：库里有标签时才出现（没有整行隐藏，不占地方）。
+   点一个＝按该标签收窄结果，可多选（多选＝同时满足）。 */
+.sb-tags {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.35rem;
+  margin-top: 0.6rem; padding-top: 0.6rem;
+  border-top: 1px solid var(--line-2);
+}
+.sb-tags-label {
+  font-size: 0.68rem; color: var(--ink-3);
+  letter-spacing: 0.06em; margin-right: 0.1rem;
+}
+.tag-chip {
+  font: inherit; font-size: 0.68rem; line-height: 1;
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--line); background: var(--paper-2); color: var(--ink-2);
+  border-radius: 0; cursor: pointer;
+}
+.tag-chip:hover { border-color: var(--ink-3); color: var(--ink); }
+.tag-chip i { font-style: normal; font-size: 0.6rem; color: var(--ink-3); }
+.tag-chip.on { background: var(--ink); border-color: var(--ink); color: var(--paper-2); }
+.tag-chip.on i { color: var(--paper-2); opacity: 0.6; }
+.tag-chip-clear { border-style: dashed; color: var(--ink-3); }
+
+/* ---------------------------------------------------------------- 虚拟文件 */
+/* 虚拟文件是软件内部自建的「条目」（不是磁盘上的真文件）—— 卡片上给它一点区分 */
+.card-virt { border-left: 2px solid var(--accent); }
+.card-virt .path { font-family: inherit; direction: ltr; }
+.virt-tag {
+  font-size: 0.6rem; letter-spacing: 0.08em;
+  border: 1px solid var(--accent); color: var(--accent);
+  padding: 0 0.25rem; margin-right: 0.35rem;
+}
+.card .badge.virt { color: var(--accent); }
+
+/* 虚拟文件编辑弹层 */
+.vform { gap: 1rem; }
+/* 描述框：给个舒服的行高和下限；真正的「撑到刚好放下全部文字」由 JS 的 autoGrow 负责 */
+.vform textarea { line-height: 1.7; min-height: 8rem; resize: vertical; }
+.vf-group {
+  display: grid; gap: 0.35rem;
+  border-top: 1px solid var(--line-2); padding-top: 0.6rem;
+}
+.vf-head { display: flex; align-items: center; justify-content: space-between; }
+.vf-head > span {
+  font-size: 0.7rem; color: var(--ink-3);
+  font-family: var(--mono); letter-spacing: 0.04em;
+}
+.vf-list { display: grid; gap: 1px; background: var(--line-2); border: 1px solid var(--line-2); }
+.vf-item {
+  display: flex; align-items: center; gap: 0.5rem;
+  background: var(--paper-2); padding: 0.35rem 0.5rem;
+}
+.vf-name {
+  flex: 1; min-width: 0; font-size: 0.74rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.vf-empty { background: var(--paper-2); padding: 0.45rem 0.5rem; font-size: 0.72rem; color: var(--ink-3); }
+.btn-mini.on { border-color: var(--accent); color: var(--accent); }
+.vf-tags { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; min-height: 1.4rem; }
+.vf-none { font-size: 0.72rem; color: var(--ink-3); }
+.vf-head-btns { display: inline-flex; gap: 0.35rem; }
+/* 虚拟文件预览抽屉里的封面 / 配图 */
+.drawer-cover { width: 100%; display: block; border: 1px solid var(--line-2); background: var(--line-2); }
+.drawer-img { width: 100%; display: block; border: 1px solid var(--line-2); }
+/* 浏览网格里的虚拟文件格子：和图片格子一样给个缩略图位 */
+.cell-virt .cell-media { background: var(--paper); }
+
 /* ---------------------------------------------------------------- 浏览 / 重复 */
 .browse-head { display: flex; align-items: center; justify-content: space-between; }
 .browse-tools { display: flex; gap: 0.5rem; align-items: center; }
@@ -189,7 +384,17 @@ html, body {
   display: flex; flex-direction: column;
 }
 .drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 0.85rem var(--gap); border-bottom: 1px solid var(--line); }
-.drawer-body { padding: var(--gap); overflow-y: auto; display: grid; gap: 0.85rem; }
+/* 🔴 这里必须是 flex 而不是 grid。
+   原因：grid 的 auto 行是按 **max-content** 定高的，而一段会自动换行的文本
+   在"最宽情况"下只占一行 —— 于是描述那一行被定成 1 行高（实测 23px），
+   文字就被裁掉了。flex 列会用**已知的容器宽度**去算每个子项的内容高度，
+   这才是我们要的「按实际换行结果撑开」。
+   （.modal-body 同样是 grid，长大段文字也会有这个问题。） */
+.drawer-body { padding: var(--gap); overflow-y: auto; display: flex; flex-direction: column; gap: 0.85rem; }
+/* 🔴 子项不许被压扁。flex 默认 flex-shrink:1，而抽屉高度是固定的（calc(100vh-3.25rem)），
+   内容一超高，带 overflow:auto 的 pre / audio / video 就被压缩 —— 描述于是只剩一行。
+   这里统一不收缩，超出的部分交给 .drawer-body 自己滚。 */
+.drawer-body > * { flex: 0 0 auto; }
 .drawer-body img { width: 100%; border: 1px solid var(--line-2); }
 .drawer-body pre {
   font-family: var(--mono); font-size: 0.75rem; white-space: pre-wrap; word-break: break-all;
@@ -456,7 +661,7 @@ html, body {
   color: #c2410c; font: inherit; text-decoration: underline dotted;
 }
 .lib-missing:hover { color: #9a3412; }
-.miss-list { max-height: 38vh; overflow: auto; border: 1px solid var(--line-1); border-radius: 8px; }
+.miss-list { max-height: 38vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
 .miss-row {
   display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap;
   padding: 0.42rem 0.6rem; border-bottom: 1px solid var(--line-2);
@@ -470,20 +675,28 @@ html, body {
 .dup-bar label { font-size: 0.72rem; color: var(--ink-3); display: flex; align-items: center; gap: 0.3rem; }
 .dup-bar input[type="number"] {
   width: 4.6rem; padding: 0.24rem 0.4rem; font-size: 0.74rem;
-  border: 1px solid var(--line-1); border-radius: 6px; background: var(--bg-1); color: var(--ink-1);
+  border: 1px solid var(--line); border-radius: 6px; background: var(--paper-2); color: var(--ink);
 }
 .dup-hint { font-size: 0.7rem; color: var(--ink-3); padding: 0.3rem 0.1rem 0.55rem; }
-.dup-sep { color: var(--ink-4); margin: 0 0.28rem; font-weight: 400; }
+
+/* 近似重复：段数超护栏时的提示（一行话 + 一个小按钮，不弹对话框） */
+.dup-guard {
+  display: flex; align-items: center; gap: 1rem;
+  padding: 0.9rem 1rem; border: 1px solid var(--line); background: var(--paper-2);
+}
+.dup-guard .dg-text { flex: 1; font-size: 0.76rem; color: var(--ink-2); line-height: 1.75; }
+.dup-guard .dg-text b { color: var(--warn); }
+.dup-sep { color: var(--ink-3); margin: 0 0.28rem; font-weight: 400; }
 .dup-row { cursor: pointer; }
-.dup-row:hover { background: var(--bg-2); }
+.dup-row:hover { background: var(--paper); }
 
 /* 近似重复详情弹层：左右并排 */
 .dup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
 @media (max-width: 720px) { .dup-grid { grid-template-columns: 1fr; } }
-.dup-side { border: 1px solid var(--line-1); border-radius: 8px; overflow: hidden; min-width: 0; }
+.dup-side { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; min-width: 0; }
 .dup-side-head {
   display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
-  padding: 0.45rem 0.55rem; background: var(--bg-2);
+  padding: 0.45rem 0.55rem; background: var(--paper);
 }
 .dup-side-head b { font-size: 0.76rem; word-break: break-all; }
 .dup-tag {
@@ -491,7 +704,7 @@ html, body {
   border-radius: 4px; padding: 0.05rem 0.34rem;
 }
 .dup-path { font-size: 0.64rem; color: var(--ink-3); font-family: var(--mono); padding: 0.3rem 0.55rem; word-break: break-all; }
-.dup-body { padding: 0.5rem; background: var(--bg-1); }
+.dup-body { padding: 0.5rem; background: var(--paper-2); }
 .dup-body img, .dup-body video { max-width: 100%; max-height: 32vh; border-radius: 6px; display: block; margin: 0 auto; }
 .dup-body audio { width: 100%; }
 .dup-text {

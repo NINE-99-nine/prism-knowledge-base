@@ -9,7 +9,7 @@
 用法（路径按实际改）：
   <PRISM>\\.venv\\Scripts\\python.exe ^
       <PRISM>\\tools\\import_skills.py ^
-      --library "dsh skill" ^
+      --library "技能库" ^
       --skills  "<你的 skills 目录>"
 
 参数：

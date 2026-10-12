@@ -343,9 +343,10 @@ def embed_file(info: dict, on_chunk=None) -> list[dict]:
 
 # ------------------------------------------------------------------ 主流程
 
-def _run(job_id: str, library_id: int, paths: list[str], recursive: bool) -> None:
+def _run(job_id: str, library_id: int, paths: list[str], recursive: bool,
+         include_ext=None) -> None:
     try:
-        files, skipped = scanner.scan(paths, recursive=recursive)
+        files, skipped = scanner.scan(paths, recursive=recursive, include_ext=include_ext)
         _update(job_id, total=len(files), skipped=skipped[:200])
 
         known = db.known_fingerprints(library_id)
@@ -408,7 +409,9 @@ def _run(job_id: str, library_id: int, paths: list[str], recursive: bool) -> Non
         _update(job_id, state="error", error=str(e)[:300], finished=time.time())
 
 
-def start_import(library_id: int, paths: list[str], recursive: bool = True) -> str:
+def start_import(library_id: int, paths: list[str], recursive: bool = True,
+                 include_ext=None) -> str:
+    """include_ext: 只收这些后缀（如 ['.txt', '.md']）；None/空 = 不筛。"""
     job_id = f"job_{int(time.time() * 1000)}"
     with _lock:
         _jobs[job_id] = {
@@ -421,7 +424,7 @@ def start_import(library_id: int, paths: list[str], recursive: bool = True) -> s
         db.save_job(_jobs[job_id])          # 一开始就落盘，重启后也能看到
     except Exception:
         pass
-    threading.Thread(target=_run, args=(job_id, library_id, paths, recursive),
+    threading.Thread(target=_run, args=(job_id, library_id, paths, recursive, include_ext),
                      daemon=True).start()
     return job_id
 
@@ -435,6 +438,8 @@ def rescan_missing(library_id: int) -> dict:
     seen: set[str] = set()
     for r in rows:
         p = r["path"]
+        if db.is_virtual_path(p):        # 🔴 伪路径不是真实文件，跳过 —— 否则每次检查
+            continue                     #    都会把自己的虚拟文件标成「源文件失效」
         if p in seen:
             continue
         seen.add(p)

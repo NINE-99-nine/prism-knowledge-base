@@ -51,7 +51,17 @@ def main() -> None:
         result = [p] if p else []
 
     root.destroy()
-    print(json.dumps({"paths": result}, ensure_ascii=False))
+
+    # 🔴🔴 输出必须 UTF-8 且 ASCII 安全 —— 这是「选了文件却像没反应」的真正原因。
+    # Windows 上 sys.stdout 默认是 GBK；路径里只要有 GBK 编不出的字符
+    # （♡ ☆ 𝐈𝐑𝐈𝐒 这类符号 / 数学字母），print 就抛 UnicodeEncodeError、
+    # 进程当场崩，**用户选中的路径全部丢失**，前端只看到空结果。
+    # 两道保险：stdout 改 UTF-8；JSON 用 ensure_ascii=True 把非 ASCII 全转成 \uXXXX。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
+    print(json.dumps({"paths": result}, ensure_ascii=True))
 
 
 # 预设分组（跟 config.py 里支持的扩展名保持一致）
