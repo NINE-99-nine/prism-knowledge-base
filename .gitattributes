@@ -1,0 +1,8 @@
+# 统一行尾策略，避免 clone 下来 .bat 变成 LF 后 cmd.exe 解析异常
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ico binary
+*.png binary
+*.jpg binary
+*.db binary
