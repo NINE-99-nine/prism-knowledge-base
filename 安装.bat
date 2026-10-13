@@ -2,6 +2,7 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 title Prism - 安装环境
+setlocal enabledelayedexpansion
 
 echo.
 echo   ============================================================
@@ -22,23 +23,37 @@ set "PY=%~dp0.venv\Scripts\python.exe"
 set "BASE="
 
 REM ---- 找一个可用的基础 Python（用来创建环境）----
-REM ---- 优先用 PRISM_PYTHON 环境变量，其次 PATH 里的 python ----
+REM ---- 顺序：PRISM_PYTHON 环境变量 → py 启动器 → PATH 里的 python ----
 if defined PRISM_PYTHON if exist "%PRISM_PYTHON%" set "BASE=%PRISM_PYTHON%"
+
 if not defined BASE (
-  for /f "delims=" %%i in ('where python 2^>nul') do (
-    if not defined BASE set "BASE=%%i"
+  for /f "delims=" %%i in ('py -3 -c "import sys;print(sys.executable)" 2^>nul') do (
+    if not defined BASE call :accept "%%i"
   )
 )
+
+if not defined BASE (
+  for /f "delims=" %%i in ('where python 2^>nul') do (
+    if not defined BASE call :accept "%%i"
+  )
+)
+
 if not defined BASE (
   for /f "delims=" %%i in ('where python3 2^>nul') do (
-    if not defined BASE set "BASE=%%i"
+    if not defined BASE call :accept "%%i"
   )
 )
 
 if not defined BASE (
   echo.
-  echo   [错误] 没有找到任何 Python，无法创建环境。
-  echo   请先安装 Python 3.10 以上版本。
+  echo   [错误] 没有找到可用的 Python。
+  echo.
+  echo   提示：如果敲 python 会弹出「应用商店」，那只是商店的占位程序，
+  echo         不是 Python 本体；它跑不了 venv，本脚本会自动跳过它。
+  echo.
+  echo   请到 https://www.python.org/downloads/ 下载安装 Python 3.10 以上版本，
+  echo   安装时务必勾选 "Add python.exe to PATH"，
+  echo   装完重新打开一个窗口再运行本脚本。
   echo.
   pause >nul
   exit /b 1
@@ -92,9 +107,7 @@ set "OK=1"
 
 echo.
 if "%OK%"=="0" (
-  echo   [警告] 有依赖没装上。请检查网络后重新运行本脚本。
-  echo          （缺 pywebview 的话，界面会退回浏览器打开，
-  echo            并且无法把文件拖进窗口入库）
+  echo   [警告] 有依赖没装上。请先确认网络，再重新运行本脚本。
   echo.
   pause >nul
   exit /b 1
@@ -105,3 +118,15 @@ echo.
 echo   窗口将在 30 秒后自动关闭
 "%SystemRoot%\System32\timeout.exe" /t 30 >nul
 exit /b 0
+
+REM ============================================================
+REM  子程序：校验候选 Python
+REM  1) 跳过微软应用商店的占位程序（0 字节转发壳，跑不了 venv）
+REM  2) 只有真的能执行才采纳，避免选到一个跑不通的假 python
+REM ============================================================
+:accept
+set "CAND=%~1"
+if not "!CAND:\WindowsApps\=!"=="!CAND!" exit /b
+"%~1" -c "import sys" >nul 2>nul || exit /b
+set "BASE=%~1"
+exit /b
