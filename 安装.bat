@@ -1,21 +1,27 @@
 @echo off
-chcp 65001 >nul
+chcp 936 >nul
 cd /d "%~dp0"
-title Prism - å®‰è£…çŽ¯å¢ƒ
+title Prism - °²×°»·¾³
 setlocal enabledelayedexpansion
+
+REM ============================================================
+REM  ±¾ÎÄ¼þ±ØÐëÒÔ GBK / ANSI ±àÂë±£´æ£¬²»Òª´æ³É UTF-8¡£
+REM  cmd ¶ÁÈ¡ UTF-8 Åú´¦ÀíÊ±°´×Ö½ÚÎ»ÒÆÕÒÐÐ£¬ÖÐÎÄ»á´íÎ»£º
+REM  ÇáÔòÌáÊ¾ÂÒÂë£¬ÖØÔò°Ñ×¢ÊÍµ±³ÉÃüÁîÖ´ÐÐ¡£´æ³É GBK ¾ÍÃ»ÓÐÕâ¸öÎÊÌâ¡£
+REM ============================================================
 
 echo.
 echo   ============================================================
-echo    Prism æ£±é•œ - çŽ¯å¢ƒå®‰è£…
+echo    Prism Àâ¾µ - »·¾³°²×°
 echo   ============================================================
 echo.
-echo   è¿™ä¸€æ­¥ä¼šåœ¨ prism æ–‡ä»¶å¤¹å†…åˆ›å»ºä¸€ä¸ªç‹¬ç«‹ Python çŽ¯å¢ƒ
-echo   (.venv)ï¼Œå¹¶å®‰è£…ä»¥ä¸‹ä¾èµ–ï¼š
+echo   ÕâÒ»²½»áÔÚ prism ÎÄ¼þ¼ÐÄÚ´´½¨Ò»¸ö¶ÀÁ¢ Python »·¾³
+echo   (.venv)£¬²¢°²×°ÒÔÏÂÒÀÀµ£º
 echo.
-echo     numpy      å‘é‡è¿ç®—
-echo     pywebview  åŽŸç”Ÿæ¡Œé¢çª—å£ï¼ˆæœ‰äº†å®ƒæ‰èƒ½æŠŠæ–‡ä»¶æ‹–è¿›çª—å£ç›´æŽ¥å…¥åº“ï¼‰
+echo     numpy      ÏòÁ¿ÔËËã
+echo     pywebview  Ô­Éú×ÀÃæ´°¿Ú£¨ÓÐÁËËü²ÅÄÜ°ÑÎÄ¼þÍÏ½ø´°¿ÚÖ±½ÓÈë¿â£©
 echo.
-echo   æ‰€æœ‰ä¸œè¥¿éƒ½ç•™åœ¨ prism æ–‡ä»¶å¤¹é‡Œï¼Œä¸å¾€åˆ«å¤„å†™ã€‚
+echo   ËùÓÐ¶«Î÷¶¼ÁôÔÚ prism ÎÄ¼þ¼ÐÀï£¬²»Íù±ð´¦Ð´¡£
 echo.
 pause
 
@@ -23,13 +29,13 @@ set "PY=%~dp0.venv\Scripts\python.exe"
 set "BASE="
 set "BASEARG="
 
-REM ---- æ‰¾ä¸€ä¸ªå¯ç”¨çš„åŸºç¡€ Pythonï¼ˆç”¨æ¥åˆ›å»ºçŽ¯å¢ƒï¼‰----
-REM ---- é¡ºåºï¼šPRISM_PYTHON â†’ py å¯åŠ¨å™¨ â†’ PATH é‡Œçš„ python ----
+REM ---- ÕÒÒ»¸ö¿ÉÓÃµÄ»ù´¡ Python£¨ÓÃÀ´´´½¨»·¾³£©----
+REM ---- Ë³Ðò£ºPRISM_PYTHON »·¾³±äÁ¿ ¡ú py Æô¶¯Æ÷ ¡ú PATH ÀïµÄ python ----
 if defined PRISM_PYTHON if exist "%PRISM_PYTHON%" set "BASE=%PRISM_PYTHON%"
 
-REM py å¯åŠ¨å™¨ï¼šç›´æŽ¥æŠŠå®ƒå½“è§£é‡Šå™¨ç”¨ï¼Œç»ä¸æ•èŽ·å®ƒçš„è¾“å‡ºã€‚
-REM æ•èŽ·è¦ç»è¿‡ç®¡é“å’ŒæŽ§åˆ¶å°ä»£ç é¡µï¼Œè·¯å¾„é‡Œä¸€æ—¦å‡ºçŽ°éž ASCII å­—ç¬¦ï¼ˆæ¯”å¦‚å…¨è§’æ‹¬å·ï¼‰ï¼Œ
-REM æ‹¿å›žæ¥çš„è·¯å¾„ä¼šè¢«å¼„è„ï¼Œå¯¼è‡´æŠŠä¸€ä¸ªæœ¬æ¥å¯ç”¨çš„ Python è¯¯åˆ¤æˆä¸å¯ç”¨ã€‚
+REM py Æô¶¯Æ÷£ºÖ±½Ó°ÑËüµ±½âÊÍÆ÷ÓÃ£¬²»²¶»ñËüµÄÊä³ö¡£
+REM ²¶»ñÒª¾­¹ý¹ÜµÀºÍ¿ØÖÆÌ¨´úÂëÒ³£¬Â·¾¶ÀïÒ»µ©ÓÐ·Ç ASCII ×Ö·û£¨±ÈÈçÈ«½ÇÀ¨ºÅ£©£¬
+REM È¡»ØÀ´µÄÂ·¾¶»áÊ§Õæ£¬µ¼ÖÂ°Ñ¿ÉÓÃµÄ Python ÎóÅÐ³É²»¿ÉÓÃ¡£
 if not defined BASE (
   py -3 -c "import sys,venv,ensurepip;sys.exit(0 if sys.version_info>=(3,10) else 1)" >nul 2>nul
   if not errorlevel 1 (
@@ -52,62 +58,76 @@ if not defined BASE (
 
 if not defined BASE (
   echo.
-  echo   [é”™è¯¯] æ²¡æœ‰æ‰¾åˆ°å¯ç”¨çš„ Pythonã€‚
+  echo   [´íÎó] Ã»ÓÐÕÒµ½¿ÉÓÃµÄ Python¡£
   echo.
-  echo   æœ¬è„šæœ¬è¦æ±‚ Python 3.10 ä»¥ä¸Šï¼Œä¸”å¿…é¡»å¸¦ venv / ensurepip æ¨¡å—ã€‚
+  echo   ±¾½Å±¾ÒªÇó Python 3.10 ÒÔÉÏ£¬ÇÒ±ØÐë´ø venv / ensurepip Ä£¿é¡£
   echo.
-  echo   æç¤ºï¼šå¦‚æžœæ•² python ä¼šå¼¹å‡ºã€Œåº”ç”¨å•†åº—ã€ï¼Œé‚£åªæ˜¯å•†åº—çš„å ä½ç¨‹åºï¼Œ
-  echo         ä¸æ˜¯ Python æœ¬ä½“ï¼›conda / miniconda è‡ªå¸¦çš„ Python ä¹Ÿå¸¸å¸¸
-  echo         ç¼ºå°‘ venv æ¨¡å— â€”â€” è¿™ä¸¤ç§éƒ½ä¼šè¢«è‡ªåŠ¨è·³è¿‡ã€‚
+  echo   ÌáÊ¾£ºÈç¹ûÇÃ python »áµ¯³ö¡¸Ó¦ÓÃÉÌµê¡¹£¬ÄÇÖ»ÊÇÉÌµêµÄÕ¼Î»³ÌÐò£¬
+  echo         ²»ÊÇ Python ±¾Ìå£»conda / miniconda ×Ô´øµÄ Python Ò²³£³£
+  echo         È±ÉÙ venv Ä£¿é ¡ª¡ª ÕâÁ½ÖÖ¶¼»á±»×Ô¶¯Ìø¹ý¡£
   echo.
-  echo   è¯·åˆ° https://www.python.org/downloads/ ä¸‹è½½å®‰è£… Python 3.10 ä»¥ä¸Šç‰ˆæœ¬ï¼Œ
-  echo   å®‰è£…æ—¶åŠ¡å¿…å‹¾é€‰ "Add python.exe to PATH"ï¼Œ
-  echo   è£…å®Œé‡æ–°æ‰“å¼€ä¸€ä¸ªçª—å£å†è¿è¡Œæœ¬è„šæœ¬ã€‚
+  echo   Çëµ½ https://www.python.org/downloads/ ÏÂÔØ°²×° Python 3.10 ÒÔÉÏ°æ±¾£¬
+  echo   °²×°Ê±Îñ±Ø¹´Ñ¡ "Add python.exe to PATH"£¬
+  echo   ×°ÍêÖØÐÂ´ò¿ªÒ»¸ö´°¿ÚÔÙÔËÐÐ±¾½Å±¾¡£
   echo.
   pause >nul
   exit /b 1
 )
 
 echo.
-echo   ä½¿ç”¨åŸºç¡€ Python: %BASE% %BASEARG%
+echo   Ê¹ÓÃ»ù´¡ Python: %BASE% %BASEARG%
 echo.
 
 if not exist "%PY%" (
-  echo   [1/2] åˆ›å»ºç‹¬ç«‹çŽ¯å¢ƒ .venv ...
+  echo   [1/2] ´´½¨¶ÀÁ¢»·¾³ .venv ...
   "%BASE%" %BASEARG% -m venv "%~dp0.venv"
   if errorlevel 1 (
-    echo   [å¤±è´¥] åˆ›å»ºçŽ¯å¢ƒå‡ºé”™ï¼ˆè¯¦ç»†æŠ¥é”™è§ä¸Šä¸€è¡Œï¼‰ã€‚
-    echo          å¦‚æžœå‡ºçŽ° "No module named venv"ï¼Œè¯´æ˜Žè¿™ä¸ª Python ç”¨ä¸äº† venvï¼Œ
-    echo          è¯·æ”¹ç”¨å®˜æ–¹ Pythonï¼šhttps://www.python.org/downloads/
+    echo   [Ê§°Ü] ´´½¨»·¾³³ö´í£¨ÏêÏ¸±¨´í¼ûÉÏÒ»ÐÐ£©¡£
+    echo          Èç¹û³öÏÖ "No module named venv"£¬ËµÃ÷Õâ¸ö Python ÓÃ²»ÁË venv£¬
+    echo          Çë¸ÄÓÃ¹Ù·½ Python£ºhttps://www.python.org/downloads/
     pause >nul
     exit /b 1
   )
 ) else (
-  echo   [1/2] ç‹¬ç«‹çŽ¯å¢ƒå·²å­˜åœ¨ï¼Œè·³è¿‡åˆ›å»ºã€‚
+  echo   [1/2] ¶ÀÁ¢»·¾³ÒÑ´æÔÚ£¬Ìø¹ý´´½¨¡£
 )
 
 echo.
-echo   [2/2] å®‰è£…ä¾èµ– ...
+echo   [2/2] °²×°ÒÀÀµ ...
 set PYTHONPATH=
 set PYTHONHOME=
 
-REM ---- é€‰ä¸‹è½½æºï¼šå®˜æ–¹æºå“åº”å¤ªæ…¢å°±è‡ªåŠ¨æ”¹ç”¨å›½å†…é•œåƒ ----
+REM ---- Ñ¡ÏÂÔØÔ´ ----
+REM ¹â²âÑÓ³Ù²»×¼£ºÑÓ³Ù¼¸°ÙºÁÃëµÄÔ´Ò²¿ÉÄÜÖ»ÓÐ¼¸Ê® kB/s¡£
+REM ÕâÀïÓÃ pip ÕæÏÂÒ»±éËü×Ô¼º£¨Ô¼ 1.8MB£©£¬³¬¹ý 8 Ãë¾Í¸ÄÓÃ¹úÄÚ¾µÏñ£»
+REM ÕâÒ»²½ÏÂµÄ°üºóÃæÉý¼¶ pip Ê±ÕýºÃÓÃµÃÉÏ£¬²»ÀË·Ñ¡£
 set "PIPIDX=-i https://pypi.org/simple"
 set "PIPALT=-i https://pypi.tuna.tsinghua.edu.cn/simple"
-set "PIPNAME=PyPI å®˜æ–¹æº"
-set "ALTNAME=æ¸…åŽé•œåƒ"
-set "PIPMS="
-for /f "delims=" %%t in ('powershell -NoProfile -Command "[int](Measure-Command { try { Invoke-WebRequest https://pypi.org/simple/ -UseBasicParsing -Method Head -TimeoutSec 6 | Out-Null } catch {} }).TotalMilliseconds" 2^>nul') do set "PIPMS=%%t"
-if defined PIPMS if !PIPMS! GTR 3000 (
+set "PIPNAME=PyPI ¹Ù·½Ô´"
+set "ALTNAME=Çå»ª¾µÏñ"
+set "SPDDIR=%~dp0_pipcheck_tmp"
+set "DT="
+mkdir "%SPDDIR%" 2>nul
+for /f "tokens=1-4 delims=:.," %%a in ("%TIME: =0%") do set /a "T1=1%%a*3600+1%%b*60+1%%c-366100"
+"%PY%" -m pip download --no-deps --quiet --disable-pip-version-check --timeout 8 --retries 1 -d "%SPDDIR%" pip !PIPIDX! >nul 2>nul
+if errorlevel 1 (
+  set "DT=99"
+) else (
+  for /f "tokens=1-4 delims=:.," %%a in ("%TIME: =0%") do set /a "T2=1%%a*3600+1%%b*60+1%%c-366100"
+  set /a "DT=T2-T1"
+)
+rmdir /s /q "%SPDDIR%" 2>nul
+
+if defined DT if !DT! GEQ 8 (
   set "PIPIDX=-i https://pypi.tuna.tsinghua.edu.cn/simple"
   set "PIPALT=-i https://pypi.org/simple"
-  set "PIPNAME=æ¸…åŽé•œåƒ"
-  set "ALTNAME=PyPI å®˜æ–¹æº"
+  set "PIPNAME=Çå»ª¾µÏñ"
+  set "ALTNAME=PyPI ¹Ù·½Ô´"
 )
-if defined PIPMS (
-  echo   ä¸‹è½½æº: !PIPNAME!ï¼ˆå®˜æ–¹æºå“åº” !PIPMS! msï¼‰
+if defined DT (
+  echo   ÏÂÔØÔ´: !PIPNAME!£¨¹Ù·½Ô´ÏÂ 1.8MB ÓÃÁË !DT! Ãë£©
 ) else (
-  echo   ä¸‹è½½æº: !PIPNAME!ï¼ˆæŽ¢æµ‹ä¸åˆ°ï¼ŒæŒ‰é»˜è®¤ï¼‰
+  echo   ÏÂÔØÔ´: !PIPNAME!
 )
 
 echo.
@@ -118,7 +138,7 @@ echo.
 echo   ---- numpy ----
 "%PY%" -m pip install numpy !PIPIDX!
 if errorlevel 1 (
-  echo   [æç¤º] å¤±è´¥ï¼Œæ”¹ç”¨ !ALTNAME! é‡è¯• ...
+  echo   [ÌáÊ¾] Ê§°Ü£¬¸ÄÓÃ !ALTNAME! ÖØÊÔ ...
   "%PY%" -m pip install numpy !PIPALT!
 )
 
@@ -126,42 +146,42 @@ echo.
 echo   ---- pywebview ----
 "%PY%" -m pip install pywebview !PIPIDX!
 if errorlevel 1 (
-  echo   [æç¤º] å¤±è´¥ï¼Œæ”¹ç”¨ !ALTNAME! é‡è¯• ...
+  echo   [ÌáÊ¾] Ê§°Ü£¬¸ÄÓÃ !ALTNAME! ÖØÊÔ ...
   "%PY%" -m pip install pywebview !PIPALT!
 )
 
 echo.
 echo   ============================================================
-echo    éªŒè¯
+echo    ÑéÖ¤
 echo   ============================================================
 set "OK=1"
 "%PY%" -c "import sys,sqlite3,numpy; print('   Python   :', sys.version.split()[0]); print('   numpy    :', numpy.__version__); print('   sqlite3  :', sqlite3.sqlite_version)" || set "OK=0"
-"%PY%" -c "import webview; print('   pywebview: å·²å®‰è£…')" || set "OK=0"
+"%PY%" -c "import webview; print('   pywebview: ÒÑ°²×°')" || set "OK=0"
 
 echo.
 if "%OK%"=="0" (
-  echo   [è­¦å‘Š] æœ‰ä¾èµ–æ²¡è£…ä¸Šã€‚è¯·å…ˆç¡®è®¤ç½‘ç»œï¼Œå†é‡æ–°è¿è¡Œæœ¬è„šæœ¬ã€‚
+  echo   [¾¯¸æ] ÓÐÒÀÀµÃ»×°ÉÏ¡£ÇëÏÈÈ·ÈÏÍøÂç£¬ÔÙÖØÐÂÔËÐÐ±¾½Å±¾¡£
   echo.
   pause >nul
   exit /b 1
 )
 
-echo   çŽ¯å¢ƒå°±ç»ªï¼ŒçŽ°åœ¨å¯ä»¥åŒå‡» prism.bat å¯åŠ¨äº†ã€‚
+echo   »·¾³¾ÍÐ÷£¬ÏÖÔÚ¿ÉÒÔË«»÷ prism.bat Æô¶¯ÁË¡£
 echo.
-echo   çª—å£å°†åœ¨ 30 ç§’åŽè‡ªåŠ¨å…³é—­
+echo   ´°¿Ú½«ÔÚ 30 Ãëºó×Ô¶¯¹Ø±Õ
 "%SystemRoot%\System32\timeout.exe" /t 30 >nul
 exit /b 0
 
 REM ============================================================
-REM  å­ç¨‹åºï¼šæ ¡éªŒå€™é€‰ Python
-REM  1) è·³è¿‡å¾®è½¯åº”ç”¨å•†åº—çš„å ä½ç¨‹åºï¼ˆ0 å­—èŠ‚è½¬å‘å£³ï¼Œè·‘ä¸äº† venvï¼‰
-REM  2) è¦æ±‚ç‰ˆæœ¬ >= 3.10 ä¸”å¸¦ venv / ensurepip â€”â€” conda ç³»å¸¸å¸¸ç¼º venvï¼Œ
-REM     ä¸åœ¨è¿™é‡Œæ‹¦æŽ‰ï¼Œå°±è¦ç­‰åˆ°å»ºçŽ¯å¢ƒé‚£ä¸€æ­¥æ‰å¤±è´¥
-REM  3) æ¯è·³è¿‡ä¸€ä¸ªéƒ½æ‰“å°åŽŸå› ï¼Œæ–¹ä¾¿æŽ’æŸ¥
+REM  ×Ó³ÌÐò£ºÐ£ÑéºòÑ¡ Python
+REM  1) Ìø¹ýÎ¢ÈíÓ¦ÓÃÉÌµêµÄÕ¼Î»³ÌÐò£¨0 ×Ö½Ú×ª·¢¿Ç£¬ÅÜ²»ÁË venv£©
+REM  2) ÒªÇó°æ±¾ >= 3.10 ÇÒ´ø venv / ensurepip ¡ª¡ª conda Ïµ³£³£È± venv£¬
+REM     ²»ÔÚÕâÀïÀ¹µô£¬¾ÍÒªµÈµ½½¨»·¾³ÄÇÒ»²½²ÅÊ§°Ü
+REM  3) Ã¿Ìø¹ýÒ»¸ö¶¼´òÓ¡Ô­Òò£¬·½±ãÅÅ²é
 REM ============================================================
 :accept
 set "CAND=%~1"
-if not "!CAND:\WindowsApps\=!"=="!CAND!" (echo   è·³è¿‡ï¼ˆåº”ç”¨å•†åº—å ä½ï¼‰ï¼š!CAND! & exit /b)
-"%~1" -c "import sys,venv,ensurepip;sys.exit(0 if sys.version_info>=(3,10) else 1)" >nul 2>nul || (echo   è·³è¿‡ï¼ˆä¸å¯ç”¨ï¼šç‰ˆæœ¬ä½ŽäºŽ 3.10 æˆ–ç¼ºå°‘ venv æ¨¡å—ï¼‰ï¼š!CAND! & exit /b)
+if not "!CAND:\WindowsApps\=!"=="!CAND!" (echo   Ìø¹ý£¨Ó¦ÓÃÉÌµêÕ¼Î»£©£º!CAND! & exit /b)
+"%~1" -c "import sys,venv,ensurepip;sys.exit(0 if sys.version_info>=(3,10) else 1)" >nul 2>nul || (echo   Ìø¹ý£¨²»¿ÉÓÃ£º°æ±¾µÍÓÚ 3.10 »òÈ±ÉÙ venv Ä£¿é£©£º!CAND! & exit /b)
 set "BASE=%~1"
 exit /b
