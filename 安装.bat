@@ -21,14 +21,20 @@ pause
 
 set "PY=%~dp0.venv\Scripts\python.exe"
 set "BASE="
+set "BASEARG="
 
 REM ---- 找一个可用的基础 Python（用来创建环境）----
-REM ---- 顺序：PRISM_PYTHON 环境变量 → py 启动器 → PATH 里的 python ----
+REM ---- 顺序：PRISM_PYTHON → py 启动器 → PATH 里的 python ----
 if defined PRISM_PYTHON if exist "%PRISM_PYTHON%" set "BASE=%PRISM_PYTHON%"
 
+REM py 启动器：直接把它当解释器用，绝不捕获它的输出。
+REM 捕获要经过管道和控制台代码页，路径里一旦出现非 ASCII 字符（比如全角括号），
+REM 拿回来的路径会被弄脏，导致把一个本来可用的 Python 误判成不可用。
 if not defined BASE (
-  for /f "delims=" %%i in ('py -3 -c "import sys;print(sys.executable)" 2^>nul') do (
-    if not defined BASE call :accept "%%i"
+  py -3 -c "import sys,venv,ensurepip;sys.exit(0 if sys.version_info>=(3,10) else 1)" >nul 2>nul
+  if not errorlevel 1 (
+    set "BASE=py"
+    set "BASEARG=-3"
   )
 )
 
@@ -48,11 +54,11 @@ if not defined BASE (
   echo.
   echo   [错误] 没有找到可用的 Python。
   echo.
-  echo   提示：如果敲 python 会弹出「应用商店」，那只是商店的占位程序，
-  echo         不是 Python 本体；它跑不了 venv，本脚本会自动跳过它。
+  echo   本脚本要求 Python 3.10 以上，且必须带 venv / ensurepip 模块。
   echo.
-  echo   另外：conda / miniconda 自带的 Python 常常没有 venv 模块，上面会自动跳过，
-  echo         那种情况请另外装一个官方 Python。
+  echo   提示：如果敲 python 会弹出「应用商店」，那只是商店的占位程序，
+  echo         不是 Python 本体；conda / miniconda 自带的 Python 也常常
+  echo         缺少 venv 模块 —— 这两种都会被自动跳过。
   echo.
   echo   请到 https://www.python.org/downloads/ 下载安装 Python 3.10 以上版本，
   echo   安装时务必勾选 "Add python.exe to PATH"，
@@ -63,12 +69,12 @@ if not defined BASE (
 )
 
 echo.
-echo   使用基础 Python: %BASE%
+echo   使用基础 Python: %BASE% %BASEARG%
 echo.
 
 if not exist "%PY%" (
   echo   [1/2] 创建独立环境 .venv ...
-  "%BASE%" -m venv "%~dp0.venv"
+  "%BASE%" %BASEARG% -m venv "%~dp0.venv"
   if errorlevel 1 (
     echo   [失败] 创建环境出错（详细报错见上一行）。
     echo          如果出现 "No module named venv"，说明这个 Python 用不了 venv，
@@ -84,22 +90,44 @@ echo.
 echo   [2/2] 安装依赖 ...
 set PYTHONPATH=
 set PYTHONHOME=
-"%PY%" -m pip install --upgrade pip -i https://pypi.org/simple
+
+REM ---- 选下载源：官方源响应太慢就自动改用国内镜像 ----
+set "PIPIDX=-i https://pypi.org/simple"
+set "PIPALT=-i https://pypi.tuna.tsinghua.edu.cn/simple"
+set "PIPNAME=PyPI 官方源"
+set "ALTNAME=清华镜像"
+set "PIPMS="
+for /f "delims=" %%t in ('powershell -NoProfile -Command "[int](Measure-Command { try { Invoke-WebRequest https://pypi.org/simple/ -UseBasicParsing -Method Head -TimeoutSec 6 | Out-Null } catch {} }).TotalMilliseconds" 2^>nul') do set "PIPMS=%%t"
+if defined PIPMS if !PIPMS! GTR 3000 (
+  set "PIPIDX=-i https://pypi.tuna.tsinghua.edu.cn/simple"
+  set "PIPALT=-i https://pypi.org/simple"
+  set "PIPNAME=清华镜像"
+  set "ALTNAME=PyPI 官方源"
+)
+if defined PIPMS (
+  echo   下载源: !PIPNAME!（官方源响应 !PIPMS! ms）
+) else (
+  echo   下载源: !PIPNAME!（探测不到，按默认）
+)
+
+echo.
+echo   ---- pip ----
+"%PY%" -m pip install --upgrade pip !PIPIDX!
 
 echo.
 echo   ---- numpy ----
-"%PY%" -m pip install numpy -i https://pypi.org/simple
+"%PY%" -m pip install numpy !PIPIDX!
 if errorlevel 1 (
-  echo   [提示] 官方源失败，改用清华源重试 ...
-  "%PY%" -m pip install numpy -i https://pypi.tuna.tsinghua.edu.cn/simple
+  echo   [提示] 失败，改用 !ALTNAME! 重试 ...
+  "%PY%" -m pip install numpy !PIPALT!
 )
 
 echo.
 echo   ---- pywebview ----
-"%PY%" -m pip install pywebview -i https://pypi.org/simple
+"%PY%" -m pip install pywebview !PIPIDX!
 if errorlevel 1 (
-  echo   [提示] 官方源失败，改用清华源重试 ...
-  "%PY%" -m pip install pywebview -i https://pypi.tuna.tsinghua.edu.cn/simple
+  echo   [提示] 失败，改用 !ALTNAME! 重试 ...
+  "%PY%" -m pip install pywebview !PIPALT!
 )
 
 echo.
@@ -127,13 +155,13 @@ exit /b 0
 REM ============================================================
 REM  子程序：校验候选 Python
 REM  1) 跳过微软应用商店的占位程序（0 字节转发壳，跑不了 venv）
-REM  2) 跳过没有 venv / ensurepip 模块的 Python（conda 系常见），
-REM     否则要等到建环境那一步才失败
+REM  2) 要求版本 >= 3.10 且带 venv / ensurepip —— conda 系常常缺 venv，
+REM     不在这里拦掉，就要等到建环境那一步才失败
 REM  3) 每跳过一个都打印原因，方便排查
 REM ============================================================
 :accept
 set "CAND=%~1"
 if not "!CAND:\WindowsApps\=!"=="!CAND!" (echo   跳过（应用商店占位）：!CAND! & exit /b)
-"%~1" -c "import venv, ensurepip" >nul 2>nul || (echo   跳过（没有 venv 模块，多为 conda）：!CAND! & exit /b)
+"%~1" -c "import sys,venv,ensurepip;sys.exit(0 if sys.version_info>=(3,10) else 1)" >nul 2>nul || (echo   跳过（不可用：版本低于 3.10 或缺少 venv 模块）：!CAND! & exit /b)
 set "BASE=%~1"
 exit /b
