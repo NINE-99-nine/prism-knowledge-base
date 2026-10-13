@@ -51,6 +51,9 @@ if not defined BASE (
   echo   提示：如果敲 python 会弹出「应用商店」，那只是商店的占位程序，
   echo         不是 Python 本体；它跑不了 venv，本脚本会自动跳过它。
   echo.
+  echo   另外：conda / miniconda 自带的 Python 常常没有 venv 模块，上面会自动跳过，
+  echo         那种情况请另外装一个官方 Python。
+  echo.
   echo   请到 https://www.python.org/downloads/ 下载安装 Python 3.10 以上版本，
   echo   安装时务必勾选 "Add python.exe to PATH"，
   echo   装完重新打开一个窗口再运行本脚本。
@@ -67,7 +70,9 @@ if not exist "%PY%" (
   echo   [1/2] 创建独立环境 .venv ...
   "%BASE%" -m venv "%~dp0.venv"
   if errorlevel 1 (
-    echo   [失败] 创建环境出错。
+    echo   [失败] 创建环境出错（详细报错见上一行）。
+    echo          如果出现 "No module named venv"，说明这个 Python 用不了 venv，
+    echo          请改用官方 Python：https://www.python.org/downloads/
     pause >nul
     exit /b 1
   )
@@ -122,11 +127,13 @@ exit /b 0
 REM ============================================================
 REM  子程序：校验候选 Python
 REM  1) 跳过微软应用商店的占位程序（0 字节转发壳，跑不了 venv）
-REM  2) 只有真的能执行才采纳，避免选到一个跑不通的假 python
+REM  2) 跳过没有 venv / ensurepip 模块的 Python（conda 系常见），
+REM     否则要等到建环境那一步才失败
+REM  3) 每跳过一个都打印原因，方便排查
 REM ============================================================
 :accept
 set "CAND=%~1"
-if not "!CAND:\WindowsApps\=!"=="!CAND!" exit /b
-"%~1" -c "import sys" >nul 2>nul || exit /b
+if not "!CAND:\WindowsApps\=!"=="!CAND!" (echo   跳过（应用商店占位）：!CAND! & exit /b)
+"%~1" -c "import venv, ensurepip" >nul 2>nul || (echo   跳过（没有 venv 模块，多为 conda）：!CAND! & exit /b)
 set "BASE=%~1"
 exit /b
