@@ -79,7 +79,7 @@ class Api:
 
     @staticmethod
     def library_items(lid: int, limit: int = 200, offset: int = 0) -> dict:
-        c = db.conn()
+        c = db.conn(lid)
         rows = c.execute(
             "SELECT id, path, chunk_index, modality, size, status, added_at, "
             "       substr(chunk_text,1,200) AS text_preview "
@@ -91,60 +91,28 @@ class Api:
     # ---- 文件级视图（浏览用：一个文件一行）----
     @staticmethod
     def library_files(lid: int, limit: int = 300, offset: int = 0,
-                      modality: str | None = None) -> dict:
+                      modality: str | None = None, sort: str = "added",
+                      order: str = "desc", tags: str | None = None,
+                      not_tags: str | None = None, q: str | None = None) -> dict:
         """按 path 聚合 —— 用户关心「库里有哪些文件」，不是「有哪些向量块」。
 
+        sort    : added / name / size / mtime
+        order   : asc / desc
+        tags    : 必须全有（逗号分隔）
+        not_tags: 一个都不能有（逗号分隔）
         modality 传 "virt" 时是「只看虚拟文件」—— 虚拟文件的片段各自的 modality
         是 text/image/audio/video，所以不能按 modality 等值过滤，要按伪路径前缀。
         """
-        c = db.conn()
-        where, params = "WHERE library_id=?", [lid]
-        if modality == "virt":
-            where += " AND path LIKE ?"
-            params.append(db.VIRTUAL_PREFIX + "%")
-        elif modality:
-            where += " AND modality=?"
-            params.append(modality)
-        rows = c.execute(f"""
-            SELECT path,
-                   MAX(id)          AS id,
-                   modality,
-                   COUNT(*)         AS chunks,
-                   MAX(size)        AS size,
-                   MAX(mtime)       AS mtime,
-                   MAX(added_at)    AS added_at,
-                   MAX(CASE WHEN chunk_index = 0 THEN substr(chunk_text, 1, 220) END) AS preview,
-                   CASE WHEN MIN(status)='missing' THEN 'missing' ELSE 'ok' END AS status
-            FROM items {where}
-            GROUP BY path
-            ORDER BY MAX(id) DESC
-            LIMIT ? OFFSET ?""", params + [limit, offset]).fetchall()
-        total = c.execute(
-            f"SELECT COUNT(DISTINCT path) n FROM items {where}", params).fetchone()["n"]
-
-        # 虚拟文件补上标题 / 封面 —— 浏览列表应该显示「指环王1」而不是 prism://virtual/3
-        out = []
-        vmeta: dict[int, dict] = {}
-        for r in rows:
-            d = dict(r)
-            vid = db.vid_of_path(d.get("path"))
-            if vid is not None:
-                if not vmeta:
-                    vmeta = db.virtual_meta_map(lid)
-                info = vmeta.get(vid)
-                if info:
-                    d["virt_title"] = info.get("title") or ""
-                    d["virt_cover"] = info.get("cover") or ""
-                    d["virt_description"] = info.get("description") or ""
-            out.append(d)
-        return {"total": total, "files": out}
+        return db.files_page(lid, limit=limit, offset=offset, modality=modality,
+                             sort=sort, order=order, tags_include=tags,
+                             tags_exclude=not_tags, q=q)
 
     @staticmethod
     def file_chunks(lid: int, path: str) -> dict:
         """某个文件在该库里被切成哪些段（展开查看用）。"""
         if not path:
             raise ValueError("缺少 path")
-        rows = db.conn().execute(
+        rows = db.conn(lid).execute(
             "SELECT id, chunk_index, modality, status, "
             "       length(chunk_text) AS text_len, substr(chunk_text,1,180) AS preview "
             "FROM items WHERE library_id=? AND path=? ORDER BY chunk_index",
@@ -158,7 +126,7 @@ class Api:
         path = body.get("path") or ""
         if not lid or not path:
             raise ValueError("需要 library_id 与 path")
-        n = db.conn().execute(
+        n = db.conn(lid).execute(
             "SELECT COUNT(*) n FROM items WHERE library_id=? AND path=?",
             (lid, path)).fetchone()["n"]
         db.delete_items_by_path(lid, path)
@@ -229,8 +197,13 @@ class Api:
         if isinstance(raw_ext, str):
             raw_ext = [e for e in raw_ext.replace(";", ",").split(",") if e.strip()]
         include_ext = [str(e).strip() for e in raw_ext if str(e).strip()] or None
-        job = importer.start_import(lid, paths, bool(body.get("recursive", True)), include_ext)
-        return {"job_id": job, "include_ext": include_ext or []}
+        raw_tags = body.get("tags") or []
+        if isinstance(raw_tags, str):
+            raw_tags = [t for t in raw_tags.replace("，", ",").split(",") if t.strip()]
+        tags = [str(t).strip() for t in raw_tags if str(t).strip()]
+        job = importer.start_import(lid, paths, bool(body.get("recursive", True)),
+                                    include_ext, tags)
+        return {"job_id": job, "include_ext": include_ext or [], "tags": tags}
 
     @staticmethod
     def job(job_id: str) -> dict:
@@ -255,7 +228,7 @@ class Api:
             mode = "mixed"
         res = search.search_any(lid, q, int(body.get("top_k") or 12),
                                 body.get("modality") or None, grouped, mode,
-                                body.get("tags") or None)
+                                body.get("tags") or None, body.get("not_tags") or None)
         return {"query": q, "mode": mode, "count": len(res),
                 "grouped": grouped, "results": res}
 
@@ -279,7 +252,8 @@ class Api:
         vec = embedder.embed_blob(filename, raw, tmp_root=tmp_root)
         res = search.search_by_vector(lid, vec, int(body.get("top_k") or 12),
                                       body.get("modality") or None,
-                                      body.get("tags") or None)
+                                      body.get("tags") or None,
+                                      body.get("not_tags") or None)
         return {"query": filename, "count": len(res),
                 "size": len(raw), "results": res}
 
@@ -309,43 +283,64 @@ class Api:
 
     # ---- 条目 ----
     @staticmethod
-    def item_delete(item_id: int) -> dict:
-        db.delete_item(item_id)
-        return {"ok": True}
+    def item_delete(library_id: int, item_id: int) -> dict:
+        n = db.delete_item(library_id, item_id)
+        return {"ok": True, "removed": n}
 
     @staticmethod
     def items_move(body: dict) -> dict:
-        n = db.move_items([int(x) for x in body.get("item_ids") or []],
-                          int(body.get("target_library_id") or 0))
-        return {"moved": n}
+        return db.transfer_paths(int(body.get("library_id") or 0),
+                                 body.get("paths") or [],
+                                 int(body.get("target_library_id") or 0),
+                                 delete_src=True)
 
     @staticmethod
     def items_copy(body: dict) -> dict:
-        n = db.copy_items([int(x) for x in body.get("item_ids") or []],
-                          int(body.get("target_library_id") or 0))
-        return {"copied": n}
+        return db.transfer_paths(int(body.get("library_id") or 0),
+                                 body.get("paths") or [],
+                                 int(body.get("target_library_id") or 0),
+                                 delete_src=False)
 
     @staticmethod
-    def tag_add(item_id: int, body: dict) -> dict:
+    def tag_add(library_id: int, item_id: int, body: dict) -> dict:
         tag = (body.get("tag") or "").strip()
         if not tag:
             raise ValueError("标签不能为空")
-        db.add_tag(item_id, tag)
-        return {"tags": db.item_tags(item_id)}
+        db.add_tag(library_id, item_id, tag)
+        return {"tags": db.item_tags(library_id, item_id)}
 
     @staticmethod
-    def tag_remove(item_id: int, tag: str) -> dict:
-        db.remove_tag(item_id, tag)
-        return {"tags": db.item_tags(item_id)}
+    def tag_remove(library_id: int, item_id: int, tag: str) -> dict:
+        db.remove_tag(library_id, item_id, tag)
+        return {"tags": db.item_tags(library_id, item_id)}
 
     @staticmethod
-    def tags() -> list:
-        return db.all_tags()
+    def tags(library_id: int | None = None) -> list:
+        return db.all_tags(library_id)
 
     @staticmethod
-    def library_tags(lid: int) -> dict:
-        """某个库里用到的标签 + 各挂了多少文件（前端标签条用）。"""
-        return {"library_id": lid, "tags": db.tags_with_counts(lid)}
+    def library_tags(lid: int, q: str | None = None, sort: str = "count",
+                     limit: int = 200, offset: int = 0) -> dict:
+        """某个库的标签：置顶 + 按数量/名称分页（几千个标签也不拖死前端）。"""
+        d = db.tags_page(lid, q=q, sort=sort, limit=limit, offset=offset)
+        d["library_id"] = lid
+        return d
+
+    @staticmethod
+    def tag_batch(body: dict) -> dict:
+        """批量打标 / 移除标签（按文件）。"""
+        lid = int(body.get("library_id") or 0)
+        if not lid:
+            raise ValueError("缺少 library_id")
+        return db.tag_batch(lid, body.get("paths") or [],
+                            body.get("add") or [], body.get("remove") or [])
+
+    @staticmethod
+    def tag_pin(body: dict) -> dict:
+        lid = int(body.get("library_id") or 0)
+        if not lid:
+            raise ValueError("缺少 library_id")
+        return db.set_pin(lid, body.get("name") or "", bool(body.get("pinned")))
 
     # ---------------------------------------------------------- 虚拟文件
 
@@ -354,10 +349,17 @@ class Api:
         return {"library_id": lid, "items": db.list_virtuals(lid)}
 
     @staticmethod
-    def virtual_get(vid: int) -> dict:
-        v = virtual.get_full(vid)
+    def virtual_get(vid: int, library_id: int | None = None) -> dict:
+        lid = int(library_id or 0)
+        if not lid:
+            hit = db.find_virtual(vid)
+            if not hit:
+                raise ValueError("虚拟文件不存在")
+            lid = hit[0]
+        v = virtual.get_full(lid, vid)
         if v is None:
             raise ValueError("虚拟文件不存在")
+        v["library_id"] = lid
         return v
 
     @staticmethod
@@ -367,7 +369,10 @@ class Api:
 
     @staticmethod
     def virtual_update(vid: int, body: dict) -> dict:
-        return virtual.update(vid,
+        lid = int(body.get("library_id") or 0) or int((db.find_virtual(vid) or (0, {}))[0])
+        if not lid:
+            raise ValueError("虚拟文件不存在")
+        return virtual.update(lid, vid,
                               title=body.get("title"),
                               description=body.get("description"),
                               assets=body.get("assets"),
@@ -375,29 +380,33 @@ class Api:
                               cover=body.get("cover"))
 
     @staticmethod
-    def virtual_delete(vid: int) -> dict:
-        return virtual.delete(vid)
+    def virtual_delete(vid: int, library_id: int | None = None) -> dict:
+        lid = int(library_id or 0) or int((db.find_virtual(vid) or (0, {}))[0])
+        if not lid:
+            raise ValueError("虚拟文件不存在")
+        return virtual.delete(lid, vid)
 
     @staticmethod
     def virtual_tags(vid: int, body: dict) -> dict:
-        """给虚拟文件打标签。
+        """给虚拟文件打标签（统一落在 chunk 0 标题片段上）。
 
-        标签是**片段级**的东西，一个虚拟文件有多个片段（标题/描述/配图…），
-        所以统一落在 chunk 0（标题片段）上 —— 检索时再盖到所有片段
-        （见 search._hit_tags），这样语义命中的配图卡片也能显示标签。
+        body: {library_id?, tags: [新标签全集]}
         """
-        cid = db.virtual_chunk0_id(vid)
+        lid = int(body.get("library_id") or 0) or int((db.find_virtual(vid) or (0, {}))[0])
+        if not lid:
+            raise ValueError("虚拟文件不存在")
+        cid = db.virtual_chunk0_id(lid, vid)
         if not cid:
             raise ValueError("虚拟文件还没有片段（先保存一次）")
         tags = body.get("tags")
         if tags is not None:
-            for t in db.item_tags(cid):
-                db.remove_tag(cid, t)
+            for t in db.item_tags(lid, cid):
+                db.remove_tag(lid, cid, t)
             for t in tags:
                 t = (t or "").strip()
                 if t:
-                    db.add_tag(cid, t)
-        return {"tags": db.item_tags(cid), "tag_item_id": cid}
+                    db.add_tag(lid, cid, t)
+        return {"tags": db.item_tags(lid, cid), "tag_item_id": cid, "library_id": lid}
 
     @staticmethod
     def rescan(lid: int) -> dict:
@@ -416,12 +425,15 @@ class Api:
         return {"removed": n}
 
     @staticmethod
-    def item_detail(item_id: int) -> dict:
-        it = db.get_item(item_id)
+    def item_detail(item_id: int, library_id: int | None = None) -> dict:
+        lid = int(library_id or 0)
+        if not lid:
+            raise ValueError("缺少 library_id")
+        it = db.get_item(lid, item_id)
         if not it:
             raise ValueError("条目不存在")
         it.pop("vec", None)          # 向量不上前端
-        it["tags"] = db.item_tags(item_id)
+        it["tags"] = db.item_tags(lid, item_id)
         return it
 
     # ---- 系统集成 ----
@@ -538,6 +550,14 @@ class _Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def handle_error(self, request, client_address):
+        """浏览器关标签时会把 keep-alive 连接直接掐掉 —— 那不是故障，别刷红字。"""
+        import sys as _sys
+        et = _sys.exc_info()[0]
+        if et is not None and issubclass(et, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "Prism/1.0"
@@ -629,7 +649,12 @@ class Handler(BaseHTTPRequestHandler):
                 if len(seg) == 3 and seg[2] == "missing" and m == "GET":
                     return self._json(Api.missing(lid))
                 if len(seg) == 3 and seg[2] == "tags" and m == "GET":
-                    return self._json(Api.library_tags(lid))
+                    return self._json(Api.library_tags(
+                        lid,
+                        qs.get("q", [""])[0] or None,
+                        qs.get("sort", ["count"])[0] or "count",
+                        int(qs.get("limit", ["200"])[0]),
+                        int(qs.get("offset", ["0"])[0])))
                 if len(seg) == 3 and seg[2] == "virtual" and m == "GET":
                     return self._json(Api.virtual_list(lid))
                 if len(seg) == 3 and seg[2] == "virtual" and m == "POST":
@@ -667,30 +692,47 @@ class Handler(BaseHTTPRequestHandler):
 
             if len(seg) >= 2 and seg[0] == "virtual":
                 vid = int(seg[1])
+                vlid = int(qs.get("library_id", ["0"])[0] or 0)
                 if len(seg) == 2 and m == "GET":
-                    return self._json(Api.virtual_get(vid))
+                    return self._json(Api.virtual_get(vid, vlid or None))
                 if len(seg) == 2 and m in ("PATCH", "POST"):
                     return self._json(Api.virtual_update(vid, self._body()))
                 if len(seg) == 2 and m == "DELETE":
-                    return self._json(Api.virtual_delete(vid))
+                    return self._json(Api.virtual_delete(vid, vlid or None))
                 if len(seg) == 3 and seg[2] == "tags" and m in ("POST", "PATCH"):
                     return self._json(Api.virtual_tags(vid, self._body()))
 
             if len(seg) >= 2 and seg[0] == "items":
                 item_id = int(seg[1])
+                ilid = int(qs.get("library_id", ["0"])[0] or 0)
                 if len(seg) == 2 and m == "DELETE":
-                    return self._json(Api.item_delete(item_id))
+                    if not ilid:
+                        raise ValueError("缺少 library_id")
+                    return self._json(Api.item_delete(ilid, item_id))
                 if len(seg) == 3 and seg[2] == "tags":
                     if m == "POST":
-                        return self._json(Api.tag_add(item_id, self._body()))
+                        b = self._body()
+                        lid2 = int(b.get("library_id") or ilid or 0)
+                        if not lid2:
+                            raise ValueError("缺少 library_id")
+                        return self._json(Api.tag_add(lid2, item_id, b))
                     if m == "DELETE":
-                        return self._json(Api.tag_remove(item_id, qs.get("tag", [""])[0]))
+                        if not ilid:
+                            raise ValueError("缺少 library_id")
+                        return self._json(Api.tag_remove(ilid, item_id,
+                                                        qs.get("tag", [""])[0]))
 
             if seg == ["tags"] and m == "GET":
-                return self._json(Api.tags())
+                lid_q = int(qs.get("library_id", ["0"])[0] or 0)
+                return self._json(Api.tags(lid_q or None))
+            if seg == ["tags", "pin"] and m in ("POST", "PATCH"):
+                return self._json(Api.tag_pin(self._body()))
+            if seg == ["tags", "batch"] and m == "POST":
+                return self._json(Api.tag_batch(self._body()))
 
             if len(seg) == 2 and seg[0] == "item" and m == "GET":
-                return self._json(Api.item_detail(int(seg[1])))
+                return self._json(Api.item_detail(
+                    int(seg[1]), int(qs.get("library_id", ["0"])[0] or 0) or None))
 
             if seg == ["pick"] and m == "POST":
                 return self._json(Api.pick(qs.get("mode", ["dir"])[0],
@@ -719,7 +761,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(Api.library_files(
                         flid, int(qs.get("limit", ["300"])[0]),
                         int(qs.get("offset", ["0"])[0]),
-                        qs.get("modality", [""])[0] or None))
+                        qs.get("modality", [""])[0] or None,
+                        qs.get("sort", ["added"])[0] or "added",
+                        qs.get("order", ["desc"])[0] or "desc",
+                        qs.get("tags", [""])[0] or None,
+                        qs.get("not_tags", [""])[0] or None,
+                        qs.get("q", [""])[0] or None))
                 if len(seg) == 4 and seg[3] == "chunks" and m == "GET":
                     return self._json(Api.file_chunks(flid, qs.get("path", [""])[0]))
 
@@ -760,13 +807,8 @@ class Handler(BaseHTTPRequestHandler):
         p = Path(raw_path)
         if not p.is_file():
             return self._err("文件不存在", 404)
-        # 库里的 path 可能来自旧索引（正斜杠）或新导入（反斜杠），两种都查
-        variants = {str(p.resolve()), str(p.resolve()).replace("\\", "/"),
-                    raw_path, raw_path.replace("/", "\\")}
-        q = " OR ".join(["path=?"] * len(variants))
-        row = db.conn().execute(
-            f"SELECT 1 FROM items WHERE {q} LIMIT 1", tuple(variants)).fetchone()
-        if not row:
+        # 库里的 path 可能来自旧索引（正斜杠）或新导入（反斜杠）—— path_is_indexed 两种都查
+        if not db.path_is_indexed(str(p.resolve())) and not db.path_is_indexed(raw_path):
             # 虚拟文件的配图/音视频、以及它关联的本地文件，挂的是真实路径，
             # 但 items.path 里存的是伪路径 prism://virtual/<id> —— 额外放行它们，
             # 否则结果卡片上的封面图会被 403 挡住。
@@ -923,6 +965,12 @@ def main():
     db.init()
     info = _tidy()
     ok, msg = embed_health()
+    try:
+        import housekeeping
+        housekeeping.start()                 # 后台回收线程：按阈值压实 + 定期截断草稿
+        hk = "已启动（阈值 %.0f%% 碎片）" % (db.COMPACT_RATIO * 100)
+    except Exception as e:                   # noqa: BLE001
+        hk = f"未启动（{type(e).__name__}: {e}）"
     banner = [
         "",
         "  ============================================================",
@@ -930,8 +978,9 @@ def main():
         "  ============================================================",
         f"   Web UI   : http://{HOST}:{PORT}",
         f"   Embed    : {'OK  ' if ok else 'DOWN'}  {msg}",
-        f"   Database : {db.DB_PATH}",
-        f"   Data dir : {db.DB_PATH.parent}",
+        f"   Meta DB  : {db.META_PATH}",
+        f"   Libraries: {db.LIBS_DIR}  （一个库一个文件，删库=删文件）",
+        f"   回收     : {hk}",
         f"   Temp     : {'已清理 %d 个残留段（%d 小时超时线 / %.0f MB 容量线）' % (info['removed'], getattr(config,'TMP_MAX_AGE_SEC',7200)//3600, getattr(config,'TMP_MAX_BYTES',5e8)/1048576) if info['removed'] else '干净（%d 小时超时线 / %.0f MB 容量线）' % (getattr(config,'TMP_MAX_AGE_SEC',7200)//3600, getattr(config,'TMP_MAX_BYTES',5e8)/1048576)}",
         "   Stop     : close this window, or press Ctrl+C",
         "  ============================================================",

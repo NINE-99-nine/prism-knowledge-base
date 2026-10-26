@@ -52,6 +52,10 @@
 
   <section class="workspace">
 
+    <!-- 标签条（所有视图共用）：置顶 + 高频前 24 个 + 「全部标签」面板。
+         点一下＝包含（＋），右键／⊖＝排除（－），再点一次取消。 -->
+    <div id="tagbar" class="tagbar hidden"></div>
+
     <!-- 检索视图 -->
     <div id="view-search" class="view">
       <div class="searchbar">
@@ -94,10 +98,6 @@
             </select>
           </label>
         </div>
-
-        <!-- 标签条：当前库里有标签时才出现（没有就整行隐藏，不占地方）。
-             点一个＝按该标签收窄结果；可以多选，多选是「同时满足」。 -->
-        <div class="sb-tags hidden" id="sb-tags"></div>
       </div>
       <div id="blob-query" class="blob-query" style="display:none"></div>
       <div id="results" class="results"></div>
@@ -119,13 +119,26 @@
             <button class="seg-i" data-v="audio">音频</button>
             <button class="seg-i" data-v="virt" title="只看内部自建的「虚拟文件」">虚拟</button>
           </div>
+          <span class="sb-sep"></span>
+          <label class="sb-num" title="按哪一项排序（服务端排序，翻页顺序一致）">
+            排序
+            <select id="browse-sort">
+              <option value="added">入库时间</option>
+              <option value="name">名称</option>
+              <option value="size">体积</option>
+              <option value="mtime">修改时间</option>
+            </select>
+          </label>
+          <button id="btn-order" class="btn-mini" title="切换升序 / 降序">↓</button>
           <div class="view-toggle" title="显示方式">
             <button id="btn-mode-list" class="on" title="列表：每行一条">▤</button>
             <button id="btn-mode-grid" title="图标：网格缩略图（像 Windows 文件夹）">▦</button>
           </div>
+          <button id="btn-select" class="btn-mini" title="开启后可以勾选多个文件，批量打标签 / 移动 / 移除">☑ 多选</button>
           <button id="btn-rescan" class="btn-ghost">检查文件</button>
         </div>
       </div>
+      <div id="selbar" class="selbar hidden"></div>
       <div id="browse-list" class="browse-list"></div>
       <div id="browse-pager" class="pager hidden"></div>
     </div>
@@ -161,6 +174,10 @@
         </button>
         <button id="btn-pick" class="btn-ghost btn-pick">选择文件</button>
         <button id="btn-pick-dir" class="btn-ghost btn-pick">选择文件夹</button>
+        <label class="import-tags" title="这一批文件统一打上的标签（逗号分隔）；已入库的文件也会补上这些标签">
+          本批标签
+          <input id="import-tags" type="text" placeholder="白发, 校服（可留空）" autocomplete="off">
+        </label>
       </div>
 
       <!-- 格式筛选面板（点「格式」弹出） -->

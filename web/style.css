@@ -803,3 +803,202 @@ html, body {
 .blob-query .bq-name { font-weight: 600; max-width: 46ch; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .blob-query .bq-meta { opacity: 0.65; margin-left: auto; white-space: nowrap; }
+/* ==========================================================================
+   标签条 v2 / 排序 / 多选 / 批量操作  —— 2026-10-26
+   ========================================================================== */
+
+/* ---- 标签条（所有视图共用，置顶 + 前 24 个 + 面板） ---- */
+.tagbar {
+  position: relative;
+  border: 1px solid var(--line-2);
+  background: var(--paper);
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+  margin-bottom: 0.6rem;
+}
+.tagbar.hidden { display: none; }
+.tagbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+}
+.tb-lab {
+  font-size: 0.62rem;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+  margin-right: 0.2rem;
+}
+.tb-empty { font-size: 0.68rem; color: var(--ink-3); }
+.tb-more { margin-left: 0.2rem; }
+.tagbar .tag-chip { display: inline-flex; align-items: center; gap: 0.15rem; }
+.tagbar .tag-chip .pin { font-size: 0.6rem; font-style: normal; }
+.tagbar .tag-chip.out {
+  background: transparent;
+  border-color: var(--warn);
+  color: var(--warn);
+  text-decoration: line-through;
+}
+
+/* ---- 筛选行（包含 + / 排除 −） ---- */
+.tagbar-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.35rem;
+  padding-top: 0.35rem;
+  border-top: 1px dashed var(--line-2);
+}
+.fchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.68rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  border: 1px solid;
+}
+.fchip.in { color: var(--ink); border-color: var(--ink-3); background: var(--paper-2); }
+.fchip.out { color: var(--warn); border-color: var(--warn); background: transparent; text-decoration: line-through; }
+.fchip i { cursor: pointer; font-style: normal; opacity: 0.6; }
+.fchip i:hover { opacity: 1; }
+
+/* ---- 标签面板 ---- */
+.tagpanel {
+  margin-top: 0.4rem;
+  border-top: 1px solid var(--line-2);
+  padding-top: 0.4rem;
+}
+.tp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
+}
+.tp-head input {
+  flex: 0 0 12rem;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.72rem;
+  border: 1px solid var(--line-2);
+  background: var(--paper-2);
+  color: var(--ink);
+  border-radius: 3px;
+}
+.tp-info { font-size: 0.64rem; color: var(--ink-3); margin-left: auto; }
+.tp-list {
+  max-height: 18rem;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.2rem;
+}
+.tp-row { display: flex; align-items: center; gap: 0.15rem; }
+.tp-row .tag-chip { flex: 1 1 auto; justify-content: space-between; min-width: 0; }
+.tp-act { padding: 0.05rem 0.25rem; font-size: 0.62rem; }
+.tp-foot { margin-top: 0.3rem; }
+
+/* ---- 浏览列表：多选、行内标签、序号 ---- */
+.row.file-row { grid-template-columns: 1.5rem minmax(0, 1fr) auto auto; }
+.row.file-row.selecting { grid-template-columns: 1.2rem 1.5rem minmax(0, 1fr) auto auto; }
+.row-check, .cell-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.row-check input, .cell-check input { cursor: pointer; }
+.file-row.picked, .cell.picked {
+  background: var(--paper-2);
+  box-shadow: inset 2px 0 0 var(--ink);
+}
+.cell { position: relative; }
+.cell-check { position: absolute; top: 0.25rem; left: 0.25rem; z-index: 3; background: var(--paper); border-radius: 3px; padding: 0 0.15rem; }
+.row-seq {
+  display: inline-block;
+  min-width: 1.6rem;
+  margin-right: 0.35rem;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  color: var(--ink-3);
+  text-align: right;
+}
+.rtags { display: flex; flex-wrap: wrap; gap: 0.15rem; margin-top: 0.15rem; }
+.tag.tag-sm { font-size: 0.6rem; padding: 0 0.25rem; }
+.tag.tag-more { opacity: 0.65; }
+
+/* ---- 多选动作条 ---- */
+.selbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.35rem 0.5rem;
+  margin: 0.4rem 0;
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  background: var(--paper-2);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.selbar.hidden { display: none; }
+.sel-count { font-size: 0.72rem; margin-right: 0.3rem; }
+.sel-sep { flex: 1 1 auto; }
+
+/* ---- 导入时批量打标签 ---- */
+.import-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.68rem;
+  color: var(--ink-3);
+}
+.import-tags input {
+  width: 11rem;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.7rem;
+  border: 1px solid var(--line-2);
+  background: var(--paper-2);
+  color: var(--ink);
+  border-radius: 3px;
+}
+
+/* ---- 批量打标签弹层 ---- */
+.tag-dlg { display: grid; gap: 0.4rem; }
+.td-hint { font-size: 0.72rem; color: var(--ink-3); }
+.tag-dlg input {
+  padding: 0.3rem 0.5rem;
+  font-size: 0.78rem;
+  border: 1px solid var(--line-2);
+  background: var(--paper-2);
+  color: var(--ink);
+  border-radius: 3px;
+}
+.td-suggest { display: flex; flex-wrap: wrap; gap: 0.2rem; max-height: 12rem; overflow-y: auto; }
+/* ---- 标签条二次微调（可读性） ---- */
+.tagbar .tag-chip i {
+  margin-left: 0.28rem;
+  padding: 0 0.2rem;
+  border-radius: 2px;
+  background: var(--line-2);
+  font-size: 0.58rem;
+  line-height: 1.2;
+  color: var(--ink-2, var(--ink-3));
+}
+.tagbar .tag-chip.on i { background: transparent; }
+.tagbar .tag-chip { max-width: 16rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tb-more { margin-left: auto; }          /* 全部标签固定在右端，不跟 chip 混在一起 */
+.tp-list {
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0 0.6rem;
+}
+.tp-row {
+  border-bottom: 1px dashed var(--line-2);
+  padding: 0.1rem 0;
+  min-width: 0;
+}
+.tp-row .tag-chip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-act { min-width: 1.5rem; text-align: center; font-size: 0.66rem; }
+.tp-head input { flex: 1 1 10rem; min-width: 6rem; }

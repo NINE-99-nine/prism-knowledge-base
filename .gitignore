@@ -9,6 +9,21 @@
 # ---- 运行时数据：数据库 / 备份 / 本地设置 ----
 /data/*
 !/data/.gitkeep
+# 一个库一个文件：lib_*.db 及其期刊文件同样只在本地
+/data/libs/
+*.db
+*.db-wal
+*.db-shm
+*.db.compact
+/data/_migrate/
+/data/_probe_*.db
+
+# ---- 本机专属的东西 ----
+# Windows 快捷方式（里面写的是本机绝对路径，别人拿到没用）
+*.lnk
+# 迁移/自测过程中可能落在根目录的临时库
+/_*.db*
+/prism.db*
 
 # ---- Python 独立环境（约 67 MB，可用 安装.bat 重建）----
 /.venv/

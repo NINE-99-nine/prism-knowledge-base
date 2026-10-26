@@ -33,6 +33,8 @@ REM ---- 找一个可用的基础 Python（用来创建环境）----
 REM ---- 顺序：PRISM_PYTHON 环境变量 → py 启动器 → PATH 里的 python ----
 if defined PRISM_PYTHON if exist "%PRISM_PYTHON%" set "BASE=%PRISM_PYTHON%"
 
+REM 本机专用：直接指定本机 Python（工作版保留，发布版没有这一行）
+
 REM py 启动器：直接把它当解释器用，不捕获它的输出。
 REM 捕获要经过管道和控制台代码页，路径里一旦有非 ASCII 字符（比如全角括号），
 REM 取回来的路径会失真，导致把可用的 Python 误判成不可用。

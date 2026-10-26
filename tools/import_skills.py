@@ -7,10 +7,9 @@
 回答「这个任务该用哪个技能」。体积小、一条一技能、可反复重跑（按 path 覆盖）。
 
 用法（路径按实际改）：
-  <PRISM>\\.venv\\Scripts\\python.exe ^
-      <PRISM>\\tools\\import_skills.py ^
-      --library "技能库" ^
-      --skills  "<你的 skills 目录>"
+  .venv/Scripts/python.exe tools/import_skills.py ^
+      --library "skills" ^
+      --skills  "X:/path/to/.agents/skills"
 
 参数：
   --library  目标库名，或数字 id
@@ -116,12 +115,13 @@ def main() -> int:
     pruned = 0
     if a.prune:
         keep = {it["path"] for it in items}
-        rows = db.conn().execute(
+        rows = db.conn(lid).execute(
             "SELECT DISTINCT path FROM items WHERE library_id=?", (lid,)).fetchall()
         for r in rows:
             if r["path"] not in keep:
-                db.delete_items_by_path(lid, r["path"])
+                db.delete_items_by_path(lid, r["path"], do_reclaim=False)
                 pruned += 1
+        db.reclaim(lid)
 
     print(f"完成：写入 {ok} 条" + (f"，清理 {pruned} 条陈旧条目" if a.prune else ""), flush=True)
     return 0

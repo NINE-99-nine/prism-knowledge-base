@@ -43,15 +43,15 @@ def _stat(path: str) -> tuple[int, float]:
         return 0, 0.0
 
 
-def assets_of(vid: int) -> list[dict]:
+def assets_of(library_id: int, vid: int) -> list[dict]:
     """从片段里反推这个虚拟文件的媒体清单。
 
-    🔴 **按源文件去重**：长音频会被切成很多段（5 小时的 ASMR 按 30 秒一段
+    🔴 **按源文件去重**：长音频会被切成很多段（5 小时的长音频按 30 秒一段
     就是 600 段），一段列一条的话编辑界面直接被刷屏。所以同一个源文件
     只列一项，另附「共几段」。
     """
     seen: dict[tuple, dict] = {}
-    for it in db.virtual_items(vid):
+    for it in db.virtual_items(library_id, vid):
         m = _meta(it)
         if m.get("kind") in KINDS and m.get("src"):
             key = (m["kind"], m["src"])
@@ -69,19 +69,19 @@ def assets_of(vid: int) -> list[dict]:
     return list(seen.values())
 
 
-def get_full(vid: int) -> dict | None:
+def get_full(library_id: int, vid: int) -> dict | None:
     """虚拟文件元数据 + 媒体清单 + 关联文件 + 标签（编辑界面 / 抽屉用）。"""
-    vf = db.get_virtual(vid)
+    vf = db.get_virtual(library_id, vid)
     if not vf:
         return None
-    vf["assets"] = assets_of(vid)
+    vf["assets"] = assets_of(library_id, vid)
     vf["related"] = list(vf.get("related") or [])
     vf["related_is_dir"] = [Path(p).is_dir() for p in vf["related"]]
     vf["related_exist"] = [Path(p).exists() for p in vf["related"]]
     # 标签统一挂在「标题片段」上（标签是片段级概念，虚拟文件得指定一个落点）
-    cid = db.virtual_chunk0_id(vid)
+    cid = db.virtual_chunk0_id(library_id, vid)
     vf["tag_item_id"] = cid
-    vf["tags"] = db.item_tags(cid) if cid else []
+    vf["tags"] = db.item_tags(library_id, cid) if cid else []
     return vf
 
 
@@ -98,7 +98,8 @@ def _embed_media(kind: str, src: str) -> list[dict]:
     return importer.embed_file(info)
 
 
-def rebuild(vid: int, *, title: str | None = None, description: str | None = None,
+def rebuild(library_id: int, vid: int, *, title: str | None = None,
+            description: str | None = None,
             assets: list[dict] | None = None, on_progress=None) -> dict:
     """把虚拟文件的片段重新对齐。
 
@@ -109,18 +110,18 @@ def rebuild(vid: int, *, title: str | None = None, description: str | None = Non
             顺序即 chunk 顺序（前两个 chunk 固定是标题和描述）。
             一个音频可能展开成多段（见 _embed_media），那就在这个位置占多个 chunk。
     """
-    vf = db.get_virtual(vid)
+    vf = db.get_virtual(library_id, vid)
     if not vf:
         raise ValueError("虚拟文件不存在")
     title = vf["title"] if title is None else title
     description = vf["description"] if description is None else description
     if assets is None:
-        assets = assets_of(vid)
+        assets = assets_of(library_id, vid)
 
     # 旧片段：按 (kind, src) 收下**这一整组**向量，能复用就不重算
     # （音频是多段的，所以存的是列表，不是单个向量）
     old: dict[tuple, list[bytes]] = {}
-    for r in db.conn().execute(
+    for r in db.conn(library_id).execute(
             "SELECT chunk_index, meta, vec FROM items WHERE library_id=? AND path=? "
             "ORDER BY chunk_index", (vf["library_id"], db.vpath(vid))).fetchall():
         try:
@@ -184,12 +185,12 @@ def rebuild(vid: int, *, title: str | None = None, description: str | None = Non
     if not cover:
         first_img = next((c["src"] for c in chunks if c["kind"] == "image"), "")
         if first_img:
-            db.update_virtual(vid, cover=first_img)
+            db.update_virtual(library_id, vid, cover=first_img)
 
     # 整体重写片段：先清空这条伪路径，再按新编排写进去 —— 不会留下半截旧片段
-    db.conn().execute("DELETE FROM items WHERE library_id=? AND path=?",
-                      (vf["library_id"], db.vpath(vid)))
-    db.conn().commit()
+    db.conn(library_id).execute("DELETE FROM items WHERE library_id=? AND path=?",
+                                (vf["library_id"], db.vpath(vid)))
+    db.conn(library_id).commit()
     for c in chunks:
         db.upsert_item(
             vf["library_id"], db.vpath(vid), c["chunk_index"], c["modality"],
@@ -198,7 +199,7 @@ def rebuild(vid: int, *, title: str | None = None, description: str | None = Non
              "label": c.get("label", ""), "seg": c.get("seg"), "segs": c.get("segs")},
         )
 
-    db.update_virtual(vid, title=(title or "").strip(), description=desc)
+    db.update_virtual(library_id, vid, title=(title or "").strip(), description=desc)
     return {"vid": vid, "chunks": len(chunks), "embedded": embedded,
             "reused": reused, "skipped": skipped}
 
@@ -218,24 +219,12 @@ def path_is_asset(path: str) -> bool:
     所以这两个接口必须额外放行它们 —— 否则封面图 403、关联文件打不开。
     """
     want = _norm(path)
-    # 片段里挂的媒体
-    for r in db.conn().execute("SELECT meta FROM items WHERE path LIKE ?",
-                               (db.VIRTUAL_PREFIX + "%",)):
+    for lid in db.all_library_ids():          # 一个库一个文件 → 得逐库问
         try:
-            m = json.loads(r["meta"] or "{}")
-        except (TypeError, ValueError):
+            if want in db.virtual_asset_paths(lid):
+                return True
+        except Exception:
             continue
-        src = m.get("src")
-        if src and _norm(src) == want:
-            return True
-    # 关联的本地大文件
-    for r in db.conn().execute("SELECT related FROM virtual_files"):
-        try:
-            rel = json.loads(r["related"] or "[]")
-        except (TypeError, ValueError):
-            continue
-        if any(_norm(q) == want for q in rel):
-            return True
     return False
 
 
@@ -248,24 +237,24 @@ def create(library_id: int, title: str, description: str = "",
         raise ValueError("标题不能为空（它是关键词检索的触发词）")
     vid = db.create_virtual(library_id, title, description or "", "",
                             [p for p in (related or []) if p])
-    r = rebuild(vid, title=title, description=description or "", assets=assets or [])
+    r = rebuild(library_id, vid, title=title, description=description or "", assets=assets or [])
     return {"vid": vid, **r}
 
 
-def update(vid: int, *, title=None, description=None, assets=None,
+def update(library_id: int, vid: int, *, title=None, description=None, assets=None,
            related=None, cover=None) -> dict:
     """改虚拟文件。**媒体没变的不重算向量**（见 rebuild）。"""
-    if db.get_virtual(vid) is None:
+    if db.get_virtual(library_id, vid) is None:
         raise ValueError("虚拟文件不存在")
     if related is not None:
-        db.update_virtual(vid, related=[p for p in related if p])
+        db.update_virtual(library_id, vid, related=[p for p in related if p])
     if cover is not None:
-        db.update_virtual(vid, cover=cover)
-    return rebuild(vid, title=title, description=description, assets=assets)
+        db.update_virtual(library_id, vid, cover=cover)
+    return rebuild(library_id, vid, title=title, description=description, assets=assets)
 
 
-def delete(vid: int) -> dict:
-    if db.get_virtual(vid) is None:
+def delete(library_id: int, vid: int) -> dict:
+    if db.get_virtual(library_id, vid) is None:
         raise ValueError("虚拟文件不存在")
-    db.delete_virtual(vid)
+    db.delete_virtual(library_id, vid)
     return {"ok": True, "vid": vid}

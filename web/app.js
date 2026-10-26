@@ -69,12 +69,24 @@ const state = {
   hist: [],
   histIdx: -1,
   lastResults: null,      // 最近一次检索结果的原始数组
+  lastFiles: [],          // 最近一次浏览列表（多选/批量用）
   lastDupes: null,        // 最近一次近似重复的原始数组
   blobName: "",           // 拖拽检索用的文件名（恢复查询条用）
   theme: localStorage.getItem(THEME_KEY) || "system",   // 跟随系统 / light / night
-  tags: [],               // 当前库用到的标签（带计数），来自 /api/libraries/<id>/tags
-  tagSel: new Set(),      // 标签条上选中的标签 —— 多选＝同时满足
-  autoQ: "",              // 标签条自动填进检索框的词（不是用户自己打的，可以安全清掉）
+  tags: [],               // 当前库的标签（带计数），来自 /api/libraries/<id>/tags
+  tagPinned: [],          // 置顶的那几个 —— 永远排在最前
+  tagTotal: 0,            // 这个库一共有多少个标签（不是这一页）
+  tagSel: new Set(),      // 包含筛选（必须全有）
+  tagNot: new Set(),      // 排除筛选（一个都不能有）
+  tagQuery: "",           // 标签面板里的搜索词
+  tagSort: "count",       // count | name
+  tagLimit: 200,          // 面板一页取多少个
+  tagOpen: false,         // 面板是否展开
+  sortKey: localStorage.getItem("prism.sortKey") || "added",
+  sortOrder: localStorage.getItem("prism.sortOrder") || "desc",
+  selecting: false,       // 浏览视图的多选模式
+  sel: new Set(),         // 已选中的文件路径
+  lastSelIndex: -1,       // Shift 连选的锚点
   includeExt: (() => {                                    // 导入格式白名单（空 = 全收）
     try { const v = JSON.parse(localStorage.getItem("prism.includeExt") || "[]"); return Array.isArray(v) ? v : []; }
     catch (e) { return []; }
@@ -163,8 +175,9 @@ async function refreshHealth() {
     st.innerHTML = `<i class="dot ${ok ? "ok" : "bad"}"></i><span>嵌入服务 ${ok ? "OK" : "未连接"}</span>`;
     const s = h.stats || {};
     $("#stats").innerHTML =
-      `库 ${s.libraries ?? 0}<br>条目 ${s.items ?? 0}<br>标签 ${s.tags ?? 0}` +
-      (s.missing ? `<br>失效 ${s.missing}` : "");
+      `库 ${s.libraries ?? 0}<br>条目 ${s.items ?? 0}<br>标签(全库) ${s.tags ?? 0}` +
+      (s.missing ? `<br>失效 ${s.missing}` : "") +
+      (s.disk_bytes ? `<br>索引占 ${fmtSize(s.disk_bytes)}` : "");
   } catch (e) {
     $("#status").innerHTML = `<i class="dot bad"></i><span>服务异常</span>`;
   }
@@ -184,13 +197,14 @@ async function loadLibraries() {
     const meta = lib.file_count !== undefined
       ? `${lib.file_count} 文件 · ${lib.item_count} 段 · ${lib.primary_type}`
       : `${lib.item_count} 条 · ${lib.primary_type}`;
+    const disk = lib.disk_bytes ? ` · ${fmtSize(lib.disk_bytes)}` : "";
     li.innerHTML = `
       <div class="lib-top">
         <div class="lib-name">${escapeHtml(lib.name)}</div>
         <button class="lib-edit" title="编辑（改名 / 描述 / 删除）">⋯</button>
       </div>
       ${lib.description ? `<div class="lib-desc" title="${escapeHtml(lib.description)}">${escapeHtml(lib.description)}</div>` : ""}
-      <div class="lib-meta">${meta}${lib.missing_count
+      <div class="lib-meta">${meta}${disk}${lib.missing_count
         ? ` · <button class="lib-missing" title="有 ${lib.missing_count} 个文件找不到原文件 —— 点这里处理">⚠ 失效 ${lib.missing_count}</button>`
         : ""}</div>`;
     li.onclick = () => selectLibrary(lib.id);
@@ -219,7 +233,10 @@ async function selectLibrary(id) {
   state.currentLib = id;
   state.browsePage = 1;          // 换库回到第一页
   state.tagSel.clear();          // 换库清空标签选择（各库标签不一样，留着会悬空）
-  state.autoQ = "";
+  state.tagNot.clear();
+  state.tagQuery = "";
+  state.tagOpen = false;
+  state.sel.clear();
   clearResults();                // 检索结果清掉（输入框的文字保留）
   await loadLibraries();
   await loadTagBar();            // 标签条跟着切库变
@@ -227,78 +244,186 @@ async function selectLibrary(id) {
   if (state.view === "dupes") await runDupes();
 }
 
-/* ------------------------------------------------- 标签条 */
+/* ------------------------------------------------- 标签条 v2
 
-/* 拉当前库的标签（带计数）。换库时调。 */
+   设计要点（为什么不是把所有标签铺出来）：
+   · 库里有几千个标签时，全量渲染会把内容顶到屏幕外几十屏
+   · 所以只显示「置顶 + 计数最高的前 24 个」，其余收进面板（搜索 + 排序 + 分页）
+   · 选中的标签永远显示在「筛选行」里，哪怕它不在前 24 个
+   · 三态：点一下＝包含(＋)，右键或 ⊖＝排除(－)，再点一次＝取消
+*/
+
+const TAG_TOP = 24;
+
 async function loadTagBar() {
-  const box = $("#sb-tags");
-  if (!box) return;
-  if (!state.currentLib) { state.tags = []; renderTagBar(); return; }
-  try {
-    const d = await api(`/api/libraries/${state.currentLib}/tags`);
-    state.tags = d.tags || [];
-  } catch (e) {
-    state.tags = [];
+  const bar = $("#tagbar");
+  if (!bar) return;
+  if (!state.currentLib) {
+    state.tags = []; state.tagPinned = []; state.tagTotal = 0;
+    renderTagBar(); return;
   }
+  try {
+    const q = state.tagQuery ? `&q=${encodeURIComponent(state.tagQuery)}` : "";
+    const d = await api(`/api/libraries/${state.currentLib}/tags?sort=${state.tagSort}` +
+                        `&limit=${state.tagLimit}${q}`);
+    state.tags = d.tags || [];
+    state.tagPinned = d.pinned || [];
+    state.tagTotal = d.total || 0;
+  } catch (e) {
+    state.tags = []; state.tagPinned = []; state.tagTotal = 0;
+  }
+  // 库里一个标签都没有了 → 选择清空（否则筛选条件悬空、结果永远为空）
+  if (!state.tagTotal) { state.tagSel.clear(); state.tagNot.clear(); }
   renderTagBar();
 }
 
-function renderTagBar() {
-  const box = $("#sb-tags");
-  if (!box) return;
-  const list = state.tags || [];
-  // 选中的标签如果不在这个库里了，自动摘掉（免得筛选条件悬空、结果永远为空）
-  for (const t of [...state.tagSel]) {
-    if (!list.some((x) => x.name === t)) state.tagSel.delete(t);
-  }
-  if (!list.length) {                 // 这个库还没用过标签 → 整行不出现，不占地方
-    box.classList.add("hidden");
-    box.innerHTML = "";
-    return;
-  }
-  box.classList.remove("hidden");
-  box.innerHTML =
-    `<span class="sb-tags-label">🏷 标签</span>` +
-    list.map((t) => {
-      const on = state.tagSel.has(t.name);
-      return `<button class="tag-chip${on ? " on" : ""}" data-tag="${escapeHtml(t.name)}" ` +
-             `title="${on ? "点一下取消" : "只看带这个标签的文件"}">` +
-             `${escapeHtml(t.name)}<i>${t.count}</i></button>`;
-    }).join("") +
-    (state.tagSel.size ? `<button class="tag-chip tag-chip-clear" id="tag-clear">清除筛选 ✕</button>` : "");
-
-  box.querySelectorAll(".tag-chip[data-tag]").forEach((b) => {
-    b.onclick = () => {
-      const t = b.dataset.tag;
-      if (state.tagSel.has(t)) state.tagSel.delete(t);
-      else state.tagSel.add(t);
-      renderTagBar();
-      applyTagFilter();
-    };
-  });
-  const clr = $("#tag-clear");
-  if (clr) clr.onclick = () => { state.tagSel.clear(); renderTagBar(); applyTagFilter(); };
+function tagChip(t, cls = "") {
+  const inc = state.tagSel.has(t.name);
+  const exc = state.tagNot.has(t.name);
+  const on = inc ? " on" : (exc ? " out" : "");
+  return `<button class="tag-chip${on}${cls ? " " + cls : ""}" data-tag="${escapeHtml(t.name)}" ` +
+         `title="${inc ? "点一下取消包含" : exc ? "点一下取消排除" : "点＝包含；右键＝排除"}">` +
+         `${t.pinned ? "<b class='pin'>📌</b>" : ""}${escapeHtml(t.name)}` +
+         `<i>${t.count ?? ""}</i></button>`;
 }
 
-/* 标签选择变了之后重跑检索。
-   检索框空着时（或者里面是上次自动填的标签名）→ 拿刚点的标签名当检索词 ——
-   标签现在参与关键词检索，所以「点标签 = 列出所有带这个标签的文件」。 */
-function applyTagFilter() {
-  const q = $("#q");
-  if (!q) return;
-  const userTyped = q.value.trim() && q.value !== state.autoQ;
+function renderTagBar() {
+  const bar = $("#tagbar");
+  if (!bar) return;
+  const has = state.tagTotal > 0 || state.tagSel.size || state.tagNot.size;
+  bar.classList.toggle("hidden", !has);
+  if (!has) { bar.innerHTML = ""; return; }
 
-  if (state.tagSel.size) {
-    if (!userTyped) {
-      state.autoQ = [...state.tagSel].slice(-1)[0];
-      q.value = state.autoQ;
-    }
-    doSearch();
-  } else if (state.autoQ && q.value === state.autoQ) {
-    q.value = ""; state.autoQ = ""; clearResults();      // 筛选全清了，把自动填的词也收回
-  } else if (userTyped) {
-    doSearch();                                          // 用户自己的词还在，重搜一次（不带标签）
+  const pinned = state.tagPinned || [];
+  const rest = (state.tags || []).filter((t) => !pinned.some((p) => p.name === t.name));
+  const shown = rest.slice(0, TAG_TOP);
+  const chips = [...pinned, ...shown].map((t) => tagChip(t)).join("");
+  const more = state.tagTotal > pinned.length + shown.length;
+
+  const filters = (state.tagSel.size || state.tagNot.size)
+    ? `<div class="tagbar-filters">
+         <span class="tb-lab">筛选</span>
+         ${[...state.tagSel].map((n) => `<span class="fchip in">＋${escapeHtml(n)}<i data-x="in" data-n="${escapeHtml(n)}">✕</i></span>`).join("")}
+         ${[...state.tagNot].map((n) => `<span class="fchip out">－${escapeHtml(n)}<i data-x="out" data-n="${escapeHtml(n)}">✕</i></span>`).join("")}
+         <button class="btn-mini" data-act="tag-clear">清除筛选</button>
+       </div>`
+    : "";
+
+  // 面板：搜索 + 排序 + 每个标签带 📌 / ⊖
+  let panel = "";
+  if (state.tagOpen) {
+    const rows = (state.tags || []).map((t) => `
+      <div class="tp-row">
+        <button class="tag-chip${state.tagSel.has(t.name) ? " on" : state.tagNot.has(t.name) ? " out" : ""}"
+                data-tag="${escapeHtml(t.name)}">${escapeHtml(t.name)}<i>${t.count}</i></button>
+        <button class="btn-mini tp-act" data-pin="${escapeHtml(t.name)}"
+                title="${t.pinned ? "取消置顶" : "置顶（永远排在最前面）"}">${t.pinned ? "📌" : "☆"}</button>
+        <button class="btn-mini tp-act" data-ex="${escapeHtml(t.name)}" title="排除这个标签（－）">⊖</button>
+      </div>`).join("") || `<div class="empty">没有匹配的标签</div>`;
+    panel = `<div class="tagpanel">
+        <div class="tp-head">
+          <input id="tp-q" placeholder="搜标签…" value="${escapeHtml(state.tagQuery)}" autocomplete="off">
+          <div class="seg seg-sm" id="tp-sort">
+            <button class="seg-i${state.tagSort === "count" ? " on" : ""}" data-v="count">数量</button>
+            <button class="seg-i${state.tagSort === "name" ? " on" : ""}" data-v="name">名称</button>
+          </div>
+          <span class="tp-info">共 ${state.tagTotal} 个 · 显示 ${(state.tags || []).length}</span>
+          <button class="btn-mini" data-act="tag-close">收起</button>
+        </div>
+        <div class="tp-list">${rows}</div>
+        ${(state.tags || []).length < state.tagTotal
+          ? `<div class="tp-foot"><button class="btn-mini" data-act="tag-more">加载更多（还有 ${state.tagTotal - (state.tags || []).length} 个）</button></div>`
+          : ""}
+      </div>`;
   }
+
+  bar.innerHTML = `
+    <div class="tagbar-row">
+      <span class="tb-lab">🏷 标签</span>
+      ${chips || `<span class="tb-empty">还没有标签</span>`}
+      ${more || state.tagOpen ? `<button class="btn-mini tb-more" data-act="tag-open">全部标签 (${state.tagTotal}) ▾</button>` : ""}
+    </div>
+    ${filters}
+    ${panel}`;
+}
+
+function toggleTag(name, mode) {
+  if (!name) return;
+  if (mode === "out") {
+    if (state.tagNot.has(name)) state.tagNot.delete(name);
+    else { state.tagNot.add(name); state.tagSel.delete(name); }
+  } else {
+    if (state.tagSel.has(name)) state.tagSel.delete(name);
+    else { state.tagSel.add(name); state.tagNot.delete(name); }
+  }
+  renderTagBar();
+  applyTagFilter();
+}
+
+async function togglePin(name) {
+  const cur = (state.tagPinned || []).some((t) => t.name === name)
+           || (state.tags || []).some((t) => t.name === name && t.pinned);
+  try {
+    await api("/api/tags/pin", {
+      method: "POST",
+      body: JSON.stringify({ library_id: state.currentLib, name, pinned: !cur }),
+    });
+    await loadTagBar();
+  } catch (e) { toast("置顶失败：" + e.message); }
+}
+
+function setupTagbar() {
+  const bar = $("#tagbar");
+  if (!bar) return;
+  bar.addEventListener("click", (e) => {
+    const act = e.target.closest("[data-act]");
+    if (act) {
+      const a = act.dataset.act;
+      if (a === "tag-open") { state.tagOpen = true; renderTagBar(); loadTagBar(); return; }
+      if (a === "tag-close") { state.tagOpen = false; renderTagBar(); return; }
+      if (a === "tag-more") { state.tagLimit += 300; loadTagBar(); return; }
+      if (a === "tag-clear") { state.tagSel.clear(); state.tagNot.clear(); renderTagBar(); applyTagFilter(); return; }
+    }
+    const x = e.target.closest(".fchip i");
+    if (x) {
+      const { x: kind, n: name } = x.dataset;
+      (kind === "in" ? state.tagSel : state.tagNot).delete(name);
+      renderTagBar(); applyTagFilter(); return;
+    }
+    const pin = e.target.closest("[data-pin]");
+    if (pin) { togglePin(pin.dataset.pin); return; }
+    const ex = e.target.closest("[data-ex]");
+    if (ex) { toggleTag(ex.dataset.ex, "out"); return; }
+    const chip = e.target.closest("[data-tag]");
+    if (chip) { toggleTag(chip.dataset.tag, "in"); return; }
+    const seg = e.target.closest("#tp-sort .seg-i");
+    if (seg) { state.tagSort = seg.dataset.v || "count"; loadTagBar(); }
+  });
+  // 右键 = 排除（单击保持「包含」，行为不变，也不会误触）
+  bar.addEventListener("contextmenu", (e) => {
+    const chip = e.target.closest("[data-tag]");
+    if (!chip) return;
+    e.preventDefault();
+    toggleTag(chip.dataset.tag, "out");
+  });
+  let timer = null;
+  bar.addEventListener("input", (e) => {
+    if (e.target.id !== "tp-q") return;
+    clearTimeout(timer);
+    const v = e.target.value;
+    timer = setTimeout(() => { state.tagQuery = v; state.tagLimit = 200; loadTagBar(); }, 220);
+  });
+}
+
+/* 标签筛选变了之后：浏览视图直接重查；检索视图有查询词就重搜，
+   没查询词就切到浏览视图把「带这些标签的文件」列出来（不再往检索框塞标签名） */
+function applyTagFilter() {
+  if (!state.currentLib) return;
+  if (state.view === "browse") { state.browsePage = 1; loadBrowse(); return; }
+  const q = $("#q") ? $("#q").value.trim() : "";
+  if (q) { doSearch(); return; }
+  if (state.tagSel.size || state.tagNot.size) { setView("browse"); loadBrowse(); }
+  else clearResults();
 }
 
 /* 清空检索结果，不动输入框 */
@@ -578,7 +703,8 @@ async function doSearch() {
         mode: mode,
         modality: segValue("seg-modality") || null,
         group: $("#toggle-group").classList.contains("on"),
-        tags: [...state.tagSel],              // 标签多选＝同时满足（空数组＝不过滤）
+        tags: [...state.tagSel],              // 必须全有（空数组＝不过滤）
+        not_tags: [...state.tagNot],          // 一个都不能有
       }),
     });
     state.blobName = "";
@@ -757,39 +883,57 @@ async function loadBrowse() {
     const m = segValue("seg-browse-modality");
     const per = state.browsePer;
     const offset = (state.browsePage - 1) * per;
-    const d = await api(`/api/libraries/${state.currentLib}/files?limit=${per}&offset=${offset}${m ? "&modality=" + m : ""}`);
+    const qs = new URLSearchParams({ limit: String(per), offset: String(offset),
+                                    sort: state.sortKey, order: state.sortOrder });
+    if (m) qs.set("modality", m);
+    if (state.tagSel.size) qs.set("tags", [...state.tagSel].join(","));
+    if (state.tagNot.size) qs.set("not_tags", [...state.tagNot].join(","));
+    const d = await api(`/api/libraries/${state.currentLib}/files?${qs.toString()}`);
     if (!d.files.length) {
       list.innerHTML = `<div class="empty">${state.browsePage > 1 ? "这一页没有内容" : "这个库还是空的 —— 拖入或选择文件来导入"}</div>`;
       renderPager(pager, d.total);
       return;
     }
     list.innerHTML = (state.browseMode === "grid" ? d.files.map(gridCell) : d.files.map(listRow)).join("");
+    state.lastFiles = d.files;
     bindFileRows(list, d.files);
     renderPager(pager, d.total);
+    renderSelBar();
   } catch (e) {
     list.innerHTML = `<div class="empty">加载失败：${escapeHtml(e.message)}</div>`;
   }
 }
 
-/* 列表模式：一行一个文件（含内容开头预览） */
+/* 列表模式：一行一个文件（含内容开头预览、行内标签、按当前排序的序号） */
 function listRow(f, i) {
+  const seq = (state.browsePage - 1) * state.browsePer + i + 1;
+  const tags = f.tags || [];
+  const tagHtml = tags.length
+    ? `<div class="rtags">${tags.slice(0, 3).map((t) =>
+        `<span class="tag tag-sm">${escapeHtml(t)}</span>`).join("")}${
+        tags.length > 3 ? `<span class="tag tag-sm tag-more">+${tags.length - 3}</span>` : ""}</div>`
+    : "";
+  const checked = state.sel.has(f.path) ? " checked" : "";
   return `
     <div class="file-block">
-      <div class="row file-row ${f.status === "missing" ? "missing" : ""}" data-i="${i}">
+      <div class="row file-row ${f.status === "missing" ? "missing" : ""}${state.selecting ? " selecting" : ""}${checked ? " picked" : ""}" data-i="${i}">
+        ${state.selecting ? `<div class="row-check"><input type="checkbox" ${checked} tabindex="-1"></div>` : ""}
         <div class="row-icon">${f.modality === "image" ? "🖼" : (f.modality === "video" ? "🎬" : fileIcon(f.path))}</div>
         <div class="row-main">
-          <div class="rname">${f.virt_title
+          <div class="rname"><span class="row-seq" title="按当前排序的第几个">${seq}</span>${f.virt_title
             ? `<span class="virt-tag">虚拟</span>${escapeHtml(f.virt_title)}`
             : escapeHtml(displayName(f.path))}</div>
           ${f.preview ? `<div class="rpreview">${escapeHtml(f.preview.replace(/\s+/g, " ").slice(0, 260))}</div>` : ""}
           <div class="rpath" title="${escapeHtml(f.path)}">${f.virt_title
             ? escapeHtml((f.virt_description || "").slice(0, 80))
             : escapeHtml(shortPath(f.path))}</div>
+          ${tagHtml}
         </div>
         <div class="rmeta">${MODALITY_CN[f.modality] || f.modality} · ${f.chunks > 1 ? f.chunks + " 段 · " : ""}${fmtSize(f.size)}</div>
         <div class="row-acts">
           <button class="btn-mini js-expand" title="看这个文件被切成了哪些段">段 (${f.chunks})</button>
           ${f.modality === "text" ? `<button class="btn-mini js-fulltext" title="看完整原文">全文</button>` : ""}
+          <button class="btn-mini js-tag" title="给这个文件打标签">标签</button>
           <button class="btn-mini js-reveal" title="在资源管理器中定位">定位</button>
           <button class="btn-mini js-remove" title="只移除索引，不删源文件">移除</button>
         </div>
@@ -832,8 +976,11 @@ function gridCell(f, i) {
                <div class="cell-content">${escapeHtml((f.preview || "（无文本内容）").replace(/\s+/g, " ").slice(0, 220))}</div>
              </div>`;
   }
+  const checked = state.sel.has(f.path) ? " checked" : "";
+  const tags = f.tags || [];
   return `
-    <div class="cell ${f.status === "missing" ? "missing" : ""}${vid ? " cell-virt" : ""}" data-i="${i}" title="${escapeHtml(f.path)}">
+    <div class="cell ${f.status === "missing" ? "missing" : ""}${vid ? " cell-virt" : ""}${checked ? " picked" : ""}${state.selecting ? " selecting" : ""}" data-i="${i}" title="${escapeHtml(f.path)}">
+      ${state.selecting ? `<div class="cell-check"><input type="checkbox" ${checked} tabindex="-1"></div>` : ""}
       <div class="cell-media">${media}</div>
       <div class="cell-name" title="${escapeHtml(f.path)}">${vid
         ? `<span class="virt-tag">虚拟</span>${escapeHtml(f.virt_title || "未命名")}`
@@ -841,6 +988,9 @@ function gridCell(f, i) {
       <div class="cell-meta">${vid
         ? `虚拟文件 · ${f.chunks} 段 · ${fmtSize(f.size)}`
         : `${MODALITY_CN[f.modality] || f.modality}${f.chunks > 1 ? " · " + f.chunks + " 段" : ""} · ${fmtSize(f.size)}`}</div>
+      ${tags.length ? `<div class="rtags">${tags.slice(0, 2).map((t) =>
+        `<span class="tag tag-sm">${escapeHtml(t)}</span>`).join("")}${
+        tags.length > 2 ? `<span class="tag tag-sm tag-more">+${tags.length - 2}</span>` : ""}</div>` : ""}
       <div class="cell-acts">
         <button class="btn-mini js-expand" title="看段落">段</button>
         ${!vid && f.modality === "text" ? `<button class="btn-mini js-fulltext" title="看完整原文">全文</button>` : ""}
@@ -928,7 +1078,197 @@ function bindFileRows(list, files) {
     }
 
     // 虚拟文件走预览抽屉（伪路径不是真文件，普通抽屉会显示「路径 prism://virtual/5」）
-    row.onclick = () => (vid ? openVirtualDrawer(vid) : openDrawer(f.id));
+    row.onclick = (e) => {
+      if (state.selecting) {
+        e.preventDefault();
+        e.stopPropagation();
+        const all = state.lastFiles || files;
+        if (e.shiftKey && state.lastSelIndex >= 0) {
+          const [a, b] = [state.lastSelIndex, i].sort((x, y) => x - y);
+          for (let k = a; k <= b; k++) if (all[k]) state.sel.add(all[k].path);
+        } else if (e.ctrlKey || e.metaKey) {
+          if (state.sel.has(f.path)) state.sel.delete(f.path); else state.sel.add(f.path);
+        } else {
+          if (state.sel.has(f.path)) state.sel.delete(f.path); else state.sel.add(f.path);
+        }
+        state.lastSelIndex = i;
+        refreshSelMarks(list);
+        renderSelBar();
+        return;
+      }
+      vid ? openVirtualDrawer(vid) : openDrawer(f.id);
+    };
+
+    // 单行「标签」按钮：不用进多选也能改标签
+    const tagBtn = row.querySelector(".js-tag");
+    if (tagBtn) {
+      tagBtn.onclick = (e) => {
+        e.stopPropagation();
+        tagDialog([f.path], f.tags || []);
+      };
+    }
+  });
+  // 勾选框本身跟着点击走（避免双重触发）
+  list.querySelectorAll(".row-check input, .cell-check input").forEach((cb) => {
+    cb.onclick = (e) => e.stopPropagation();
+  });
+}
+
+/* 选中状态变了之后只改 class，不重绘整行（保住滚动位置和展开的段） */
+function refreshSelMarks(list) {
+  list.querySelectorAll(".file-row, .cell").forEach((row) => {
+    const f = (state.lastFiles || [])[Number(row.dataset.i)];
+    if (!f) return;
+    const on = state.sel.has(f.path);
+    row.classList.toggle("picked", on);
+    const cb = row.querySelector("input[type=checkbox]");
+    if (cb) cb.checked = on;
+  });
+}
+
+/* 多选动作条：已选 N 个 · 打标签 / 移除标签 / 移动 / 复制 / 移除索引 / 全选本页 / 清除 */
+function renderSelBar() {
+  const bar = $("#selbar");
+  if (!bar) return;
+  if (!state.selecting) { bar.classList.add("hidden"); bar.innerHTML = ""; return; }
+  bar.classList.remove("hidden");
+  const n = state.sel.size;
+  bar.innerHTML = `
+    <span class="sel-count">已选 <b>${n}</b> 个</span>
+    <button class="btn-mini" data-sel="tag" ${n ? "" : "disabled"}>＋ 打标签</button>
+    <button class="btn-mini" data-sel="untag" ${n ? "" : "disabled"}>－ 移除标签</button>
+    <button class="btn-mini" data-sel="move" ${n ? "" : "disabled"}>移动到库</button>
+    <button class="btn-mini" data-sel="copy" ${n ? "" : "disabled"}>复制到库</button>
+    <button class="btn-mini" data-sel="remove" ${n ? "" : "disabled"}>移除索引</button>
+    <span class="sel-sep"></span>
+    <button class="btn-mini" data-sel="page">全选本页</button>
+    <button class="btn-mini" data-sel="none">清除选择</button>
+    <button class="btn-mini" data-sel="exit">退出多选</button>`;
+  bar.querySelectorAll("[data-sel]").forEach((b) => {
+    b.onclick = () => onSelAction(b.dataset.sel);
+  });
+}
+
+async function onSelAction(act) {
+  const paths = [...state.sel];
+  if (act === "exit") { state.selecting = false; state.sel.clear(); await loadBrowse(); return; }
+  if (act === "none") { state.sel.clear(); await loadBrowse(); return; }
+  if (act === "page") {
+    (state.lastFiles || []).forEach((f) => state.sel.add(f.path));
+    await loadBrowse(); return;
+  }
+  if (!paths.length) return;
+  if (act === "tag") return tagDialog(paths, []);
+  if (act === "untag") return tagDialog(paths, null, true);
+  if (act === "move" || act === "copy") return transferDialog(paths, act === "move");
+  if (act === "remove") {
+    confirmDialog(`移除 ${paths.length} 个文件的索引？`,
+      "只删索引记录，源文件不会被删除。\n之后还可以重新导入。",
+      async () => {
+        let n = 0;
+        for (const p of paths) {
+          const r = await api("/api/files", {
+            method: "DELETE",
+            body: JSON.stringify({ library_id: state.currentLib, path: p }),
+          });
+          n += r.removed || 0;
+        }
+        state.sel.clear();
+        toast(`已移除 ${paths.length} 个文件（${n} 条索引）`);
+        await refreshHealth(); await loadLibraries(); await loadTagBar(); await loadBrowse();
+      }, true);
+  }
+}
+
+/* 批量打标签 / 移除标签的弹层。removeMode=true 时列出「这些文件共有的标签」 */
+async function tagDialog(paths, currentTags, removeMode = false) {
+  const all = (state.tags || []).map((t) => t.name);
+  const common = removeMode ? (currentTags && currentTags.length ? currentTags : null) : null;
+  let suggest = common;
+  if (!suggest) {
+    // 取「当前页选中文件共有的标签」：直接用 lastFiles 里的 tags 求交集
+    const sel = (state.lastFiles || []).filter((f) => paths.includes(f.path));
+    if (sel.length) {
+      suggest = (sel[0].tags || []).filter((t) => sel.every((f) => (f.tags || []).includes(t)));
+    } else suggest = [];
+  }
+  const box = document.createElement("div");
+  box.className = "tag-dlg";
+  box.innerHTML = `
+    <div class="td-hint">${removeMode ? "移除这些标签（从选中的 " + paths.length + " 个文件上）" :
+      "给选中的 " + paths.length + " 个文件加上这些标签（逗号分隔可加多个）"}</div>
+    <input id="td-input" placeholder="${removeMode ? "输入或点下面的标签" : "白发, 校服"}" autocomplete="off">
+    <div class="td-suggest">
+      ${(removeMode ? (suggest || []) : all).slice(0, 60).map((t) =>
+        `<button class="tag-chip" data-t="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join("") || "—"}
+    </div>`;
+  const m = modal({
+    title: removeMode ? "批量移除标签" : "批量打标签",
+    body: box,
+    actions: [
+      { label: removeMode ? "移除" : "打上", primary: true, onClick: async () => {
+          const raw = box.querySelector("#td-input").value.trim();
+          const list = splitTags(raw);
+          if (!list.length) { toast("先填/点一个标签"); return false; }
+          try {
+            const r = await api("/api/tags/batch", {
+              method: "POST",
+              body: JSON.stringify({ library_id: state.currentLib, paths,
+                                     add: removeMode ? [] : list,
+                                     remove: removeMode ? list : [] }),
+            });
+            toast(removeMode ? `已移除 ${r.removed} 处标签` : `已给 ${r.files} 个文件打上 ${list.length} 个标签`);
+          } catch (e) { toast("操作失败：" + e.message); return false; }
+          await loadTagBar(); await loadBrowse();
+        } },
+      { label: "取消" },
+    ],
+  });
+  box.querySelector("#td-input").focus();
+  box.querySelectorAll(".tag-chip").forEach((b) => {
+    b.onclick = () => {
+      const inp = box.querySelector("#td-input");
+      const cur = splitTags(inp.value);
+      if (!cur.includes(b.dataset.t)) cur.push(b.dataset.t);
+      inp.value = cur.join(", ");
+    };
+  });
+  box.querySelector("#td-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); const btn = m.el.querySelector(".js-foot .btn"); if (btn) btn.click(); }
+  });
+}
+
+function splitTags(s) {
+  return String(s || "").split(/[,，;；\s]+/).map((x) => x.trim()).filter(Boolean);
+}
+
+/* 移动 / 复制到别的库（按文件，连标签一起搬） */
+async function transferDialog(paths, isMove) {
+  const others = state.libs.filter((l) => l.id !== state.currentLib);
+  if (!others.length) return toast("没有别的库");
+  const box = document.createElement("div");
+  box.className = "pick-list";
+  box.innerHTML = others.map((l) =>
+    `<button class="pick-item" data-id="${l.id}">
+       <span>${escapeHtml(l.name)}</span>
+       <em>${l.file_count ?? 0} 个文件 · ${fmtSize(l.disk_bytes || 0)}</em>
+     </button>`).join("");
+  const m = modal({ title: `${isMove ? "移动" : "复制"} ${paths.length} 个文件到…`, body: box,
+                    actions: [{ label: "取消" }] });
+  box.querySelectorAll(".pick-item").forEach((b) => {
+    b.onclick = async () => {
+      try {
+        const r = await api(isMove ? "/api/items/move" : "/api/items/copy", {
+          method: "POST",
+          body: JSON.stringify({ library_id: state.currentLib, paths,
+                                 target_library_id: Number(b.dataset.id) }),
+        });
+        toast(isMove ? `已移动 ${r.moved} 个文件` : `已复制 ${r.copied} 个文件`);
+        m.close();
+        state.sel.clear();
+        await refreshHealth(); await loadLibraries(); await loadTagBar(); await loadBrowse();
+      } catch (e) { toast("失败：" + e.message); }
+    };
   });
 }
 
@@ -1303,6 +1643,7 @@ async function pickPaths(mode) {
 
 async function startImport(paths) {
   try {
+    const tags = splitTags($("#import-tags") ? $("#import-tags").value : "");
     const d = await api("/api/import", {
       method: "POST",
       body: JSON.stringify({
@@ -1310,10 +1651,13 @@ async function startImport(paths) {
         paths,
         recursive: true,
         include_ext: state.includeExt,        // 空数组 = 不筛，服务端按 null 处理
+        tags,                                 // 这一批统一打上的标签
       }),
     });
     if (state.includeExt.length) {
-      toast(`开始导入（只收 ${state.includeExt.length} 种格式）`);
+      toast(`开始导入（只收 ${state.includeExt.length} 种格式${tags.length ? "，带标签 " + tags.join("、") : ""}）`);
+    } else if (tags.length) {
+      toast(`开始导入（带标签：${tags.join("、")}）`);
     }
     watchJob(d.job_id);
   } catch (e) {
@@ -1407,7 +1751,7 @@ async function openDrawer(itemId) {
   d.classList.remove("hidden");
   body.innerHTML = `<div class="empty">加载中…</div>`;
   try {
-    const item = await api(`/api/item/${itemId}`);
+    const item = await api(`/api/item/${itemId}?library_id=${state.currentLib}`);
     const tags = (item.tags || []);
     let media = "";
     if (item.modality === "image") {
@@ -1441,7 +1785,7 @@ async function openDrawer(itemId) {
       if (e.key !== "Enter") return;
       const tag = e.target.value.trim();
       if (!tag) return;
-      await api(`/api/items/${itemId}/tags`, { method: "POST", body: JSON.stringify({ tag }) });
+      await api(`/api/items/${itemId}/tags`, { method: "POST", body: JSON.stringify({ tag, library_id: state.currentLib }) });
       await loadTagBar();                    // 标签条跟着更新（新标签/计数变化）
       openDrawer(itemId);
     };
@@ -1452,7 +1796,7 @@ async function openDrawer(itemId) {
         const t = el.dataset.tag;
         if (!t) return;
         try {
-          await api(`/api/items/${itemId}/tags?tag=${encodeURIComponent(t)}`, { method: "DELETE" });
+          await api(`/api/items/${itemId}/tags?tag=${encodeURIComponent(t)}&library_id=${state.currentLib}`, { method: "DELETE" });
           await loadTagBar();
           if (state.view === "browse") await loadBrowse();
           toast(`已去掉标签「${t}」`);
@@ -1462,11 +1806,11 @@ async function openDrawer(itemId) {
         }
       };
     });
-    body.querySelector("#act-move").onclick = () => moveDialog([itemId]);
+    body.querySelector("#act-move").onclick = () => { d.classList.add("hidden"); transferDialog([item.path], true); };
     body.querySelector("#act-link").onclick = () => linkToVirtual(item.path);
     body.querySelector("#act-delete").onclick = async () => {
       if (!confirm("从本库移除这条索引？（不会删除源文件）")) return;
-      await api(`/api/items/${itemId}`, { method: "DELETE" });
+      await api(`/api/items/${itemId}?library_id=${state.currentLib}`, { method: "DELETE" });
       d.classList.add("hidden");
       await refreshHealth(); await loadLibraries();
       if (state.view === "browse") await loadBrowse();
@@ -1601,7 +1945,7 @@ async function openVirtualDrawer(vid) {
 
   let v;
   try {
-    v = await api(`/api/virtual/${vid}`);
+    v = await api(`/api/virtual/${vid}?library_id=${state.currentLib}`);
   } catch (e) {
     body.innerHTML = `<div class="empty">读取失败：${escapeHtml(e.message)}</div>`;
     return;
@@ -1655,7 +1999,7 @@ async function openVirtualDrawer(vid) {
   // ---- 交互 ----
   const saveTags = async (tags) => {
     try {
-      const r = await api(`/api/virtual/${vid}/tags`, { method: "POST", body: JSON.stringify({ tags }) });
+      const r = await api(`/api/virtual/${vid}/tags`, { method: "POST", body: JSON.stringify({ tags, library_id: state.currentLib }) });
       toast("标签已更新");
       await loadTagBar();
       if ($("#q").value.trim()) doSearch();
@@ -1718,7 +2062,7 @@ async function openVirtualEditor(vid) {
 
   let d = null;
   if (vid) {
-    try { d = await api(`/api/virtual/${vid}`); }
+    try { d = await api(`/api/virtual/${vid}?library_id=${state.currentLib}`); }
     catch (e) { return toast("读取失败：" + e.message); }
   }
 
@@ -1914,14 +2258,15 @@ async function openVirtualEditor(vid) {
           };
           try {
             const r = vid
-              ? await api(`/api/virtual/${vid}`, { method: "PATCH", body: JSON.stringify(payload) })
+              ? await api(`/api/virtual/${vid}`, { method: "PATCH",
+                  body: JSON.stringify({ ...payload, library_id: state.currentLib }) })
               : await api(`/api/libraries/${state.currentLib}/virtual`, { method: "POST", body: JSON.stringify(payload) });
             const newVid = vid || r.vid;
             // 标签单独存（挂在标题片段上，不跟着主保存走）
             if (newVid) {
               try {
                 await api(`/api/virtual/${newVid}/tags`, {
-                  method: "POST", body: JSON.stringify({ tags: draft.tags }),
+                  method: "POST", body: JSON.stringify({ tags: draft.tags, library_id: state.currentLib }),
                 });
               } catch (e2) {
                 toast("标签没存上：" + e2.message, 5000);
@@ -1945,7 +2290,7 @@ async function openVirtualEditor(vid) {
         onClick: async ({ close }) => {
           if (!confirm("删除这条虚拟文件？\n只删索引和它的附加信息，关联的本地文件不会被碰。")) return false;
           try {
-            await api(`/api/virtual/${vid}`, { method: "DELETE" });
+            await api(`/api/virtual/${vid}?library_id=${state.currentLib}`, { method: "DELETE" });
             close();
             toast("已删除虚拟文件");
             if ($("#q").value.trim()) doSearch();
@@ -1996,7 +2341,7 @@ async function linkToVirtual(path) {
       }
       rel.push(path);
       try {
-        await api(`/api/virtual/${vid}`, { method: "PATCH", body: JSON.stringify({ related: rel }) });
+        await api(`/api/virtual/${vid}`, { method: "PATCH", body: JSON.stringify({ related: rel, library_id: state.currentLib }) });
         box.close();
         toast(`已关联到「${v.title}」`);
       } catch (e) {
@@ -2121,32 +2466,8 @@ async function editLibrary(lib) {
   });
 }
 
-async function moveDialog(itemIds) {
-  const others = state.libs.filter((l) => l.id !== state.currentLib);
-  if (!others.length) return toast("没有别的库可移动");
-  const box = document.createElement("div");
-  box.className = "pick-list";
-  box.innerHTML = others.map((l) =>
-    `<button class="pick-item" data-id="${l.id}">
-       <span>${escapeHtml(l.name)}</span>
-       <em>${l.file_count ?? l.item_count ?? 0} 个文件</em>
-     </button>`).join("");
-  const m = modal({ title: `移动 ${itemIds.length} 条索引到…`, body: box, actions: [{ label: "取消" }] });
-  box.querySelectorAll(".pick-item").forEach((b) => {
-    b.onclick = async () => {
-      const target = Number(b.dataset.id);
-      const d = await api("/api/items/move", {
-        method: "POST",
-        body: JSON.stringify({ item_ids: itemIds, target_library_id: target }),
-      });
-      m.close();
-      toast(`已移动 ${d.moved} 条`);
-      $("#drawer").classList.add("hidden");
-      await refreshHealth(); await loadLibraries();
-      if (state.view === "browse") await loadBrowse();
-    };
-  });
-}
+/* 兼容旧入口 —— 现在抽屉里直接走 transferDialog（按文件搬，连标签一起） */
+async function moveDialog(paths) { return transferDialog(paths, true); }
 
 /* ---------------------------------------------------------------- 设置 */
 
@@ -2363,6 +2684,46 @@ async function boot() {
   $("#btn-mode-list").onclick = () => setBrowseMode("list");
   $("#btn-mode-grid").onclick = () => setBrowseMode("grid");
   segBind("seg-browse-modality", () => { state.browsePage = 1; loadBrowse(); });
+  /* 标签条（置顶 + 前 24 + 面板） */
+  setupTagbar();
+  /* 排序：服务端排，翻页顺序一致；选择存 localStorage */
+  const sortSel = $("#browse-sort");
+  if (sortSel) {
+    sortSel.value = state.sortKey;
+    sortSel.onchange = () => {
+      state.sortKey = sortSel.value;
+      localStorage.setItem("prism.sortKey", state.sortKey);
+      state.browsePage = 1;
+      loadBrowse();
+    };
+  }
+  const orderBtn = $("#btn-order");
+  const syncOrder = () => {
+    orderBtn.textContent = state.sortOrder === "asc" ? "↑" : "↓";
+    orderBtn.title = state.sortOrder === "asc" ? "当前升序 —— 点一下改降序" : "当前降序 —— 点一下改升序";
+    orderBtn.classList.toggle("on", state.sortOrder === "asc");
+  };
+  if (orderBtn) {
+    syncOrder();
+    orderBtn.onclick = () => {
+      state.sortOrder = state.sortOrder === "asc" ? "desc" : "asc";
+      localStorage.setItem("prism.sortOrder", state.sortOrder);
+      syncOrder();
+      state.browsePage = 1;
+      loadBrowse();
+    };
+  }
+  /* 多选：勾选后批量打标签 / 移动 / 移除 */
+  const selBtn = $("#btn-select");
+  if (selBtn) {
+    selBtn.onclick = () => {
+      state.selecting = !state.selecting;
+      state.sel.clear();
+      state.lastSelIndex = -1;
+      selBtn.classList.toggle("on", state.selecting);
+      loadBrowse();
+    };
+  }
   setBrowseMode(state.browseMode);   // 恢复上次的显示方式
   $("#btn-pick").onclick = () => pickPaths("files");
   $("#btn-pick-dir").onclick = () => pickPaths("dir");

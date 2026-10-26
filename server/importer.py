@@ -344,24 +344,32 @@ def embed_file(info: dict, on_chunk=None) -> list[dict]:
 # ------------------------------------------------------------------ 主流程
 
 def _run(job_id: str, library_id: int, paths: list[str], recursive: bool,
-         include_ext=None) -> None:
+         include_ext=None, tags=None) -> None:
+    """tags: 这一批文件统一打上的标签（导入时就落库，不用事后逐个补）。"""
     try:
         files, skipped = scanner.scan(paths, recursive=recursive, include_ext=include_ext)
         _update(job_id, total=len(files), skipped=skipped[:200])
 
         known = db.known_fingerprints(library_id)
-        done = failed = 0
+        done = failed = tagged = 0
+        tag_list = [t.strip() for t in (tags or []) if t and str(t).strip()]
 
         for idx, info in enumerate(files, 1):
             # ---- 中断检查：每次循环开头看一眼 ----
             if is_cancelled(job_id):
+                db.reclaim(library_id)
                 _update(job_id, state="cancelled", finished=time.time(), current="",
                         note=f"已手动中断 —— 完成 {done} 个，其余未处理")
                 return
 
-            _update(job_id, current=info["name"], done=done, failed_count=failed)
+            _update(job_id, current=info["name"], done=done, failed_count=failed,
+                    note=(f"标签：{'、'.join(tag_list)}" if tag_list else ""))
             old = known.get(info["path"])
             if old == info["fingerprint"]:
+                # 内容没变也要补标签 —— 否则「给已入库的文件补标」会全部跳过
+                if tag_list:
+                    db.tag_path(library_id, info["path"], tag_list)
+                    tagged += 1
                 done += 1
                 _update(job_id, done=done)
                 continue
@@ -370,8 +378,8 @@ def _run(job_id: str, library_id: int, paths: list[str], recursive: bool,
             last_err = None
             for attempt in range(3):
                 try:
-                    if old:                      # 变过了 → 先删旧条目
-                        db.delete_items_by_path(library_id, info["path"])
+                    if old:                      # 变过了 → 先删旧条目（批量结束后统一回收）
+                        db.delete_items_by_path(library_id, info["path"], do_reclaim=False)
                     pieces = embed_file(info)
                     for p in pieces:
                         db.upsert_item(
@@ -380,6 +388,8 @@ def _run(job_id: str, library_id: int, paths: list[str], recursive: bool,
                             vec_bytes=p["vec_bytes"], chunk_text=p["chunk_text"],
                             size=info["size"], mtime=info["mtime"],
                             fingerprint=info["fingerprint"])
+                    if tag_list:
+                        db.tag_path(library_id, info["path"], tag_list)
                     known[info["path"]] = info["fingerprint"]
                     done += 1
                     last_err = None
@@ -401,30 +411,34 @@ def _run(job_id: str, library_id: int, paths: list[str], recursive: bool,
                          "size": info.get("size", 0), "attempts": 3})
             _update(job_id, done=done, failed_count=failed)
 
+        db.reclaim(library_id)                  # 整批结束：合并草稿、清死标签
         _update(job_id, state="done", done=done, failed_count=failed,
                 finished=time.time(), current="",
-                note=f"完成 {done} 个" + (f"，失败 {failed} 个" if failed else ""))
+                note=f"完成 {done} 个" + (f"，失败 {failed} 个" if failed else "")
+                     + (f"，打标签 {tagged} 个已存在文件" if tagged else ""))
 
     except Exception as e:
         _update(job_id, state="error", error=str(e)[:300], finished=time.time())
 
 
 def start_import(library_id: int, paths: list[str], recursive: bool = True,
-                 include_ext=None) -> str:
-    """include_ext: 只收这些后缀（如 ['.txt', '.md']）；None/空 = 不筛。"""
+                 include_ext=None, tags=None) -> str:
+    """include_ext: 只收这些后缀（如 ['.txt', '.md']）；None/空 = 不筛。
+       tags: 这一批统一打上的标签（可多个）。"""
     job_id = f"job_{int(time.time() * 1000)}"
     with _lock:
         _jobs[job_id] = {
             "job_id": job_id, "library_id": library_id, "state": "running",
             "total": 0, "done": 0, "failed": [], "failed_count": 0, "skipped": [],
             "current": "", "started": time.time(), "finished": None, "error": None,
-            "cancelled": False, "note": "",
+            "cancelled": False, "note": "", "tags": [t for t in (tags or []) if t],
         }
     try:
         db.save_job(_jobs[job_id])          # 一开始就落盘，重启后也能看到
     except Exception:
         pass
-    threading.Thread(target=_run, args=(job_id, library_id, paths, recursive, include_ext),
+    threading.Thread(target=_run,
+                     args=(job_id, library_id, paths, recursive, include_ext, tags),
                      daemon=True).start()
     return job_id
 

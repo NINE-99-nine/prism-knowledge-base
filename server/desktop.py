@@ -282,7 +282,7 @@ def _set_app_id() -> None:
     """
     try:
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Dogma.Prism.Lens")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Prism.Lens")
         print("[desktop] 已设置 AppUserModelID（任务栏会用窗口图标，不再用 Python 的）", flush=True)
     except Exception as e:                                   # noqa: BLE001
         print(f"[desktop] AppUserModelID 设置失败（任务栏可能仍是 Python 图标）：{e}", flush=True)

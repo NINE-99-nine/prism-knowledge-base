@@ -20,7 +20,7 @@ def _dim() -> int:
         return _DEFAULT_DIM
 
 
-def _hit_tags(path: str, item_id: int) -> list[str]:
+def _hit_tags(library_id: int, path: str, item_id: int) -> list[str]:
     """取这条命中该显示的标签。
 
     虚拟文件的标签统一挂在 chunk 0（标题片段）上，所以要转一手 ——
@@ -28,13 +28,13 @@ def _hit_tags(path: str, item_id: int) -> list[str]:
     """
     vid = db.vid_of_path(path)
     if vid is not None:
-        cid = db.virtual_chunk0_id(vid)
+        cid = db.virtual_chunk0_id(library_id, vid)
         if cid:
-            return db.item_tags(cid)
-    return db.item_tags(item_id)
+            return db.item_tags(library_id, cid)
+    return db.item_tags(library_id, item_id)
 
 
-def _virt_meta(path: str) -> dict | None:
+def _virt_meta(library_id: int, path: str) -> dict | None:
     """虚拟文件：把伪路径 prism://virtual/<id> 换成人类可读的标题 / 封面 / 关联文件。
 
     前端拿到 virt 就显示标题和封面图，而不是那串 prism:// 伪路径。
@@ -42,7 +42,7 @@ def _virt_meta(path: str) -> dict | None:
     vid = db.vid_of_path(path)
     if vid is None:
         return None
-    vf = db.get_virtual(vid)
+    vf = db.get_virtual(library_id, vid)
     if not vf:
         return None
     return {
@@ -54,7 +54,7 @@ def _virt_meta(path: str) -> dict | None:
     }
 
 
-def _score_rows(query_vec: np.ndarray, rows, top_k: int) -> list[dict]:
+def _score_rows(library_id: int, query_vec: np.ndarray, rows, top_k: int) -> list[dict]:
     if not rows:
         return []
     M = np.vstack([from_blob(r["vec"]) for r in rows])
@@ -81,8 +81,8 @@ def _score_rows(query_vec: np.ndarray, rows, top_k: int) -> list[dict]:
             "modality": r["modality"],
             "text": r["chunk_text"] or "",
             "score": float(sims[int(i)]),
-            "tags": _hit_tags(r["path"], r["id"]),
-            "virt": _virt_meta(r["path"]),
+            "tags": _hit_tags(library_id, r["path"], r["id"]),
+            "virt": _virt_meta(library_id, r["path"]),
         })
     return out
 
@@ -97,11 +97,11 @@ def search_text(library_id: int, query: str, top_k: int = 12,
     rows = db.all_vectors(library_id, modality)
     # 折叠会大量减少条数，所以先取更宽的候选池，否则折完只剩两三条
     n = max(top_k * 4, top_k) if group else top_k
-    hits = _score_rows(np.asarray(embed_text(query), dtype=np.float32), rows, n)
+    hits = _score_rows(library_id, np.asarray(embed_text(query), dtype=np.float32), rows, n)
     return group_by_file(hits, top_k) if group else hits
 
 
-def _row_to_hit(r, score: float) -> dict:
+def _row_to_hit(library_id: int, r, score: float) -> dict:
     hit = {
         "id": r["id"],
         "path": r["path"],
@@ -109,8 +109,8 @@ def _row_to_hit(r, score: float) -> dict:
         "modality": r["modality"],
         "text": r.get("text") or r.get("chunk_text") or "",
         "score": float(score),
-        "tags": _hit_tags(r["path"], r["id"]),
-        "virt": _virt_meta(r["path"]),
+        "tags": _hit_tags(library_id, r["path"], r["id"]),
+        "virt": _virt_meta(library_id, r["path"]),
     }
     # 虚拟文件的图片/音视频片段本身没有正文，卡片上就用描述兜底
     if hit["virt"] and not hit["text"]:
@@ -147,7 +147,7 @@ def search_keyword(library_id: int, query: str, top_k: int = 12,
         scored.append((rank, n_name + n_path + n_text, path, r, score))
     scored.sort(key=lambda x: (-x[0], -x[1], x[2]))
     n = max(top_k * 4, top_k) if group else top_k
-    hits = [_row_to_hit(r, sc) for _, _, _, r, sc in scored[:n]]
+    hits = [_row_to_hit(library_id, r, sc) for _, _, _, r, sc in scored[:n]]
     return group_by_file(hits, top_k) if group else hits
 
 
@@ -156,7 +156,7 @@ def search_mixed(library_id: int, query: str, top_k: int = 12,
     """混合检索：关键词命中置顶 + 语义结果补足（按文件去重）。
 
     默认模式。搜确切名字时关键词那一路把正确答案顶到前面；
-    搜概念（"写色情小说的技巧"）时关键词多半没命中，结果就全是语义排序，
+    搜概念（"写小说的技巧"）时关键词多半没命中，结果就全是语义排序，
     行为与改造前一致 —— 两种问法都不会变差。
     """
     kw = search_keyword(library_id, query, top_k, modality, group)
@@ -177,13 +177,14 @@ def search_mixed(library_id: int, query: str, top_k: int = 12,
 
 
 def filter_by_tags(hits: list[dict], library_id: int,
-                   tags: list[str] | None) -> list[dict]:
-    """按标签多选过滤（AND：同时带齐所选全部标签的文件才留下）。
+                   tags: list[str] | None = None,
+                   not_tags: list[str] | None = None) -> list[dict]:
+    """按标签过滤：tags = 必须全有（AND），not_tags = 一个都不能有（NOT）。
 
     标签只挂在**段**上，但用户想的是"这个文件"，所以按 path 判定。
-    tags 为空 → 原样返回，不做任何事（默认不干扰检索）。
+    两个都为空 → 原样返回，不做任何事（默认不干扰检索）。
     """
-    allow = db.paths_with_all_tags(library_id, tags)
+    allow = db.path_tag_sets(library_id, tags, not_tags)
     if allow is None:
         return hits
     return [h for h in hits if h.get("path") in allow]
@@ -202,17 +203,18 @@ def filter_virtual(hits: list[dict], only: bool) -> list[dict]:
 
 def search_any(library_id: int, query: str, top_k: int = 12,
                modality: str | None = None, group: bool = False,
-               mode: str = "mixed", tags: list[str] | None = None) -> list[dict]:
+               mode: str = "mixed", tags: list[str] | None = None,
+               not_tags: list[str] | None = None) -> list[dict]:
     """检索入口：按模式分派。mode = semantic / keyword / mixed。
 
     modality 传 "virt" 时是「只看虚拟文件」—— 见 filter_virtual。
-    带标签过滤时先多取一些候选，过滤完再截到 top_k —— 否则
-    一过滤就只剩两三条，用户会以为"库里没有"。
+    tags = 必须全有；not_tags = 一个都不能有。带标签过滤时先多取候选，
+    过滤完再截到 top_k —— 否则一过滤就只剩两三条，用户会以为"库里没有"。
     """
     m = (mode or "mixed").lower()
     only_virt = modality == "virt"
     mod = None if only_virt else modality
-    n = max(top_k * 4, top_k) if (tags or only_virt) else top_k
+    n = max(top_k * 4, top_k) if (tags or not_tags or only_virt) else top_k
     if m == "keyword":
         out = search_keyword(library_id, query, n, mod, group)
     elif m == "semantic":
@@ -220,7 +222,7 @@ def search_any(library_id: int, query: str, top_k: int = 12,
     else:
         out = search_mixed(library_id, query, n, mod, group)
     out = filter_virtual(out, only_virt)
-    return filter_by_tags(out, library_id, tags)[:top_k]
+    return filter_by_tags(out, library_id, tags, not_tags)[:top_k]
 
 
 def group_by_file(rows: list[dict], top_k: int, per_file_chunks: int = 5) -> list[dict]:
@@ -268,19 +270,20 @@ def group_by_file(rows: list[dict], top_k: int, per_file_chunks: int = 5) -> lis
 
 def search_by_vector(library_id: int, vec, top_k: int = 12,
                      modality: str | None = None,
-                     tags: list[str] | None = None) -> list[dict]:
+                     tags: list[str] | None = None,
+                     not_tags: list[str] | None = None) -> list[dict]:
     """拿一个现成的向量去库里搜（拖拽文件、以图搜图、任意模态互搜都走这里）。"""
     rows = db.all_vectors(library_id, modality)
-    n = max(top_k * 4, top_k) if tags else top_k
-    hits = _score_rows(np.asarray(vec, dtype=np.float32), rows, n)
-    return filter_by_tags(hits, library_id, tags)[:top_k]
+    n = max(top_k * 4, top_k) if (tags or not_tags) else top_k
+    hits = _score_rows(library_id, np.asarray(vec, dtype=np.float32), rows, n)
+    return filter_by_tags(hits, library_id, tags, not_tags)[:top_k]
 
 
 def search_by_image(library_id: int, image_path: str, top_k: int = 12) -> list[dict]:
     """以图搜图 / 以图搜库。"""
     from embedder import embed_image
     rows = db.all_vectors(library_id, None)
-    return _score_rows(np.asarray(embed_image(image_path), dtype=np.float32), rows, top_k)
+    return _score_rows(library_id, np.asarray(embed_image(image_path), dtype=np.float32), rows, top_k)
 
 
 def similar_files(library_id: int, item_id: int, top_k: int = 12,
@@ -300,7 +303,7 @@ def similar_files(library_id: int, item_id: int, top_k: int = 12,
     结果按 path 聚合，一条文件只出一次，带它的最高分和对应片段。
     分块算 Q @ M.T 是为了别一次开出「源片段数 × 全库片段数」的矩阵。
     """
-    item = db.get_item(item_id)
+    item = db.get_item(library_id, item_id)
     if not item:
         return []
     src_path = item["path"]
@@ -339,8 +342,8 @@ def similar_files(library_id: int, item_id: int, top_k: int = 12,
         hit = {
             "id": r["id"], "path": r["path"], "chunk_index": r["chunk_index"],
             "modality": r["modality"], "text": r["chunk_text"] or "",
-            "score": x["score"], "tags": _hit_tags(r["path"], r["id"]),
-            "virt": _virt_meta(r["path"]),
+            "score": x["score"], "tags": _hit_tags(library_id, r["path"], r["id"]),
+            "virt": _virt_meta(library_id, r["path"]),
         }
         if hit["virt"] and not hit["text"]:
             hit["text"] = hit["virt"].get("description") or ""

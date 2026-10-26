@@ -24,19 +24,21 @@ EDITABLE = {
 
 
 def find_ffmpeg() -> str:
-    """自动探测 ffmpeg。找到返回路径，找不到返回空串。"""
+    """自动探测 ffmpeg。找到返回路径，找不到返回空串。
+
+    顺序：环境变量 → PATH → 常见安装位置（不写死任何人的本机路径）。
+    """
     import os
     import shutil
+    env = (os.environ.get("PRISM_FFMPEG") or "").strip()
+    if env and os.path.isfile(env):
+        return env
     p = shutil.which("ffmpeg")
     if p:
         return p
     for c in (r"C:\ffmpeg\bin\ffmpeg.exe",
               r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
-              r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
-              os.path.expanduser(r"~\scoop\apps\ffmpeg\current\bin\ffmpeg.exe"),
-              "/opt/homebrew/bin/ffmpeg",
-              "/usr/local/bin/ffmpeg",
-              "/usr/bin/ffmpeg"):
+              "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"):
         if os.path.isfile(c):
             return c
     return ""
