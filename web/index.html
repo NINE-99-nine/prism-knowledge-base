@@ -174,9 +174,14 @@
         </button>
         <button id="btn-pick" class="btn-ghost btn-pick">选择文件</button>
         <button id="btn-pick-dir" class="btn-ghost btn-pick">选择文件夹</button>
-        <label class="import-tags" title="这一批文件统一打上的标签（逗号分隔）；已入库的文件也会补上这些标签">
-          本批标签
-          <input id="import-tags" type="text" placeholder="白发, 校服（可留空）" autocomplete="off">
+        <!-- 本批标签：打一个按一次回车，变成独立的小方块；× 或退格删掉。
+             想加几个就加几个，不用记逗号。 -->
+        <label class="tag-editor" title="这一批文件统一打上的标签；已入库的文件也会补上这些标签">
+          <span class="te-label">本批标签</span>
+          <span class="te-box" id="import-tags-box">
+            <span class="te-chips" id="import-tags-chips"></span>
+            <input id="import-tags-input" type="text" placeholder="打一个按回车（可加多个）" autocomplete="off">
+          </span>
         </label>
       </div>
 

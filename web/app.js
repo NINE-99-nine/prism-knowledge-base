@@ -87,6 +87,7 @@ const state = {
   selecting: false,       // 浏览视图的多选模式
   sel: new Set(),         // 已选中的文件路径
   lastSelIndex: -1,       // Shift 连选的锚点
+  importTags: [],         // 导入时「本批标签」的小方块（数组，不是字符串）
   includeExt: (() => {                                    // 导入格式白名单（空 = 全收）
     try { const v = JSON.parse(localStorage.getItem("prism.includeExt") || "[]"); return Array.isArray(v) ? v : []; }
     catch (e) { return []; }
@@ -1641,9 +1642,76 @@ async function pickPaths(mode) {
   }
 }
 
+/* ---------------------------------------------------------------- 导入时的「本批标签」
+   一个标签一个方块：打完按回车就成一块，退格删最后一块，方块上的 × 也能删。
+   不再靠"逗号分隔"这种看不见的约定 —— 你加了几个标签，屏幕上就是几个方块。
+*/
+function renderImportTags() {
+  const box = $("#import-tags-chips");
+  if (!box) return;
+  box.innerHTML = (state.importTags || []).map((t, i) =>
+    `<span class="te-chip" data-i="${i}">${escapeHtml(t)}<i data-del="${i}" title="删掉这个标签">✕</i></span>`
+  ).join("");
+  box.querySelectorAll("[data-del]").forEach((x) => {
+    x.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      state.importTags.splice(Number(x.dataset.del), 1);
+      renderImportTags();
+    };
+  });
+}
+
+function addImportTags(raw) {
+  const parts = String(raw || "").split(/[,，、;；\s]+/).map((s) => s.trim()).filter(Boolean);
+  let added = 0;
+  for (const p of parts) {
+    if (!state.importTags.includes(p)) { state.importTags.push(p); added++; }
+  }
+  if (added) renderImportTags();
+  return added;
+}
+
+/* 输入框里还剩半截文字时（用户没按回车就点了导入）——把它也算成一个标签 */
+function flushImportTags() {
+  const inp = $("#import-tags-input");
+  if (inp && inp.value.trim()) { addImportTags(inp.value); inp.value = ""; }
+  return state.importTags.slice();
+}
+
+function setupImportTags() {
+  const inp = $("#import-tags-input");
+  const box = $("#import-tags-box");
+  if (!inp || !box) return;
+  renderImportTags();
+
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === "Tab") {
+      if (!inp.value.trim()) return;          // 空着按回车不做事（Tab 保持原有焦点行为）
+      e.preventDefault();
+      addImportTags(inp.value);
+      inp.value = "";
+      return;
+    }
+    if (e.key === "Backspace" && !inp.value && state.importTags.length) {
+      state.importTags.pop();                 // 退格删最后一块
+      renderImportTags();
+      e.preventDefault();
+    }
+  });
+  inp.addEventListener("paste", (e) => {
+    const txt = (e.clipboardData || window.clipboardData)?.getData("text") || "";
+    if (/[,，、;；\s]/.test(txt)) {            // 粘一串进来 → 直接拆成多个方块
+      e.preventDefault();
+      addImportTags(txt);
+    }
+  });
+  box.onclick = () => inp.focus();            // 点空白处也能继续输入
+}
+
 async function startImport(paths) {
   try {
-    const tags = splitTags($("#import-tags") ? $("#import-tags").value : "");
+    const tags = flushImportTags();
     const d = await api("/api/import", {
       method: "POST",
       body: JSON.stringify({
@@ -1651,7 +1719,7 @@ async function startImport(paths) {
         paths,
         recursive: true,
         include_ext: state.includeExt,        // 空数组 = 不筛，服务端按 null 处理
-        tags,                                 // 这一批统一打上的标签
+        tags,                                 // 这一批统一打上的标签（数组）
       }),
     });
     if (state.includeExt.length) {
@@ -2728,6 +2796,7 @@ async function boot() {
   $("#btn-pick").onclick = () => pickPaths("files");
   $("#btn-pick-dir").onclick = () => pickPaths("dir");
   setupFormatPanel();          // 导入格式筛选面板（快捷分组 + 自定义后缀 + 已选清单）
+  setupImportTags();           // 本批标签：回车生成方块，不再靠逗号
   $("#btn-rescan").onclick = async () => {
     if (!state.currentLib) return toast("先选库");
     const r = await api(`/api/libraries/${state.currentLib}/rescan`, { method: "POST" });

@@ -1002,3 +1002,59 @@ html, body {
 .tp-row .tag-chip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tp-act { min-width: 1.5rem; text-align: center; font-size: 0.66rem; }
 .tp-head input { flex: 1 1 10rem; min-width: 6rem; }
+
+/* ---- 本批标签：一个标签一个方块（回车生成，退格/× 删除） ---- */
+.tag-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.68rem;
+  color: var(--ink-3);
+  flex: 1 1 18rem;
+  min-width: 10rem;
+}
+.te-label { white-space: nowrap; }
+.te-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem;
+  flex: 1 1 auto;
+  min-height: 1.7rem;
+  padding: 0.15rem 0.3rem;
+  border: 1px solid var(--line-2);
+  background: var(--paper-2);
+  border-radius: 4px;
+  cursor: text;
+}
+.te-box:focus-within { border-color: var(--ink-3); }
+.te-chips { display: contents; }
+.te-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.68rem;
+  padding: 0.05rem 0.3rem;
+  border: 1px solid var(--ink-3);
+  border-radius: 3px;
+  background: var(--paper);
+  color: var(--ink);
+  white-space: nowrap;
+}
+.te-chip i {
+  font-style: normal;
+  cursor: pointer;
+  opacity: 0.55;
+  font-size: 0.6rem;
+}
+.te-chip i:hover { opacity: 1; }
+.te-box input {
+  flex: 1 1 6rem;
+  min-width: 5rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 0.7rem;
+  padding: 0.1rem 0;
+}
