@@ -34,8 +34,11 @@ Prism 自带独立 Python 环境，放在 `prism\.venv\`（约 67 MB，含 numpy
 - 查找顺序：设置里手填的路径 → `PRISM_FFMPEG` 环境变量 → 本项目的 `.venv\ffmpeg\bin\ffmpeg.exe`
   → `data\bin\` → 系统 PATH → WinGet / Scoop / Chocolatey → `C:\ffmpeg` 等常见位置。
   本机早就装过 ffmpeg 的，会自动用上，不必再装一份。
-- 找不到时：**设置 → ffmpeg 那一栏 → 「部署到本项目虚拟环境」**，自动下载（约 80~100 MB，单个 exe）到
-  `.venv\ffmpeg\bin\ffmpeg.exe`。带进度；失败会自动换备用源；也可以自己在上面手填路径。
+- 找不到时：**设置 → ffmpeg 那一栏 → 「部署到本项目虚拟环境」**，自动下载到
+  `.venv\ffmpeg\bin\ffmpeg.exe`。带进度；也可以自己在上面手填路径。
+- 下载策略（不假设你有梯子）：先把几个源各试 256 KB **测速**，挑最快的下，其余排队当备用；
+  中途断了按断点**续传**（一个源最多续 5 次才换源），不会因为一次抖动就白下；
+  直连源全不通时自动走 **pip 镜像**（清华 → 官方）里的 `imageio-ffmpeg`，掏它自带的 ffmpeg.exe（约 30 MB）。
 - 部署位置刻意放在 `.venv` 里：属于这套自包含软件自己的东西，`.gitignore` 已忽略，不进仓库、不撑大发布包。
 - 装好之后，`ffmpeg -version` 能出版本号才算成功（脚本就是这么验证的，不是"文件存在"就算）。
 - 离线/内网：设 `PRISM_FFMPEG_URL` 指向自己的 ffmpeg zip（里面要有 `bin/ffmpeg.exe`）即可。
