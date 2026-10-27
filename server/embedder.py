@@ -31,8 +31,17 @@ def _post(body: dict, timeout: int | None = None) -> dict:
     req = urllib.request.Request(
         _api(), data=json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.load(r)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        # 把服务端自己说的话带出来 —— 否则界面上永远只有「HTTP Error 500: Internal Server Error」，
+        # 看不出到底是图太大、格式不吃、还是模型崩了。
+        try:
+            detail = e.read().decode("utf-8", "replace").strip()
+        except Exception:                                   # noqa: BLE001
+            detail = ""
+        raise RuntimeError(f"嵌入服务返回 {e.code}：{detail[:300] or e.reason}") from e
 
 
 def health() -> tuple[bool, str]:
@@ -88,17 +97,33 @@ def _scratch(prefix: str = "img") -> Path:
     return d
 
 
-def _to_jpeg(path, tmpdir) -> Path:
-    """用 ffmpeg 把图片转成 JPEG。只用于上面那几种有问题的格式。"""
+def _to_jpeg(path, tmpdir, max_edge: int = 0) -> Path:
+    """用 ffmpeg 把图片转成 JPEG。max_edge>0 时顺手把长边缩到该值以内。"""
     ff = _ffmpeg()
     if not ff:
-        raise RuntimeError("要嵌入 AVIF / TIFF 图片，需要 ffmpeg（设置里可指定路径）")
-    out = Path(tmpdir) / (hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:12] + ".jpg")
-    r = subprocess.run([ff, "-y", "-v", "error", "-i", str(path), "-q:v", "2", str(out)],
-                       capture_output=True, text=True, timeout=600)
+        raise RuntimeError("这张图片要先转成 JPEG 才能嵌入，但没找到 ffmpeg（设置里可指定路径）")
+    tag = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:12]
+    out = Path(tmpdir) / (tag + (f"_{max_edge}.jpg" if max_edge else ".jpg"))
+    cmd = [ff, "-y", "-v", "error", "-i", str(path),
+           "-vf", f"scale='if(gt(max(iw,ih),{max_edge}),if(gt(iw,ih),-2,{max_edge}),iw)'"
+                  f":'if(gt(max(iw,ih),{max_edge}),if(gt(iw,ih),{max_edge},-2),ih)'"
+           if max_edge else None,
+           "-q:v", "2", str(out)]
+    cmd = [c for c in cmd if c is not None]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if not out.is_file() or out.stat().st_size == 0:
         raise RuntimeError(f"图片转 JPEG 失败：{(r.stderr or '').strip()[:160]}")
     return out
+
+
+def _looks_like_jpeg_or_png(p: Path) -> bool:
+    """按文件头判断，不看后缀 —— 后缀经常是骗人的（webp 存成 .jpg 很常见）。"""
+    try:
+        with open(p, "rb") as f:
+            head = f.read(8)
+    except OSError:
+        return False
+    return head.startswith(b"\xff\xd8\xff") or head.startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def _embed_image_file(path) -> list[float]:
@@ -110,15 +135,37 @@ def _embed_image_file(path) -> list[float]:
 
 
 def embed_image(path) -> list[float]:
+    """嵌入一张图。三级处理，尽量不让"格式问题"毁掉一次导入：
+
+    1) 文件头就是 JPEG / PNG → 直接送（绝大多数图走这条，行为与以前一致）
+    2) 其他格式（webp / avif / tiff / bmp / gif，或后缀骗人的）→ 先用 ffmpeg 转 JPEG 再送
+    3) 转换了还失败 → 再缩一次长边到 1280 px 送（有些模型对超大图直接 500）
+    全失败时把服务端原话带出来，别只说 "HTTP Error 500"
+    """
     p = Path(path)
-    if p.suffix.lower() in IMAGE_TRANSCODE_EXT:
-        tmp = _scratch("img") / hashlib.sha1(str(p).encode("utf-8")).hexdigest()[:12]
-        tmp.mkdir(parents=True, exist_ok=True)
+    first_err = None
+    if _looks_like_jpeg_or_png(p):
+        try:
+            return _embed_image_file(p)
+        except Exception as e:                              # noqa: BLE001
+            first_err = e
+
+    tmp = _scratch("img") / hashlib.sha1(str(p).encode("utf-8")).hexdigest()[:12]
+    tmp.mkdir(parents=True, exist_ok=True)
+    try:
         try:
             return _embed_image_file(_to_jpeg(p, tmp))
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-    return _embed_image_file(p)
+        except Exception as e:                              # noqa: BLE001
+            second_err = e
+            try:
+                return _embed_image_file(_to_jpeg(p, tmp, max_edge=1280))
+            except Exception as third:                       # noqa: BLE001
+                raise RuntimeError(
+                    f"{Path(path).name}：原图直接嵌入失败（{first_err or '格式不被支持'}）；"
+                    f"转 JPEG 后仍失败（{second_err}）；缩小到 1280 后仍失败（{third}）"
+                ) from third
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def embed_audio(path) -> list[float]:

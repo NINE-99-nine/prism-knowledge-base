@@ -14,6 +14,7 @@
 页面的 `window.__prismDropTarget` 记录落点，这里读它来决定归谁。
 """
 import json
+import os
 import socket
 import sys
 import threading
@@ -220,6 +221,14 @@ def _start_server() -> bool:
     return _wait_port(config.HOST, config.PORT)
 
 
+def _is_elevated() -> bool:
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:                                        # noqa: BLE001
+        return False
+
+
 def make_drop_handler(window):
     def on_drop(event):
         files = ((event or {}).get("dataTransfer") or {}).get("files") or []
@@ -243,9 +252,17 @@ def make_drop_handler(window):
             return
 
         if not paths:
+            brief = [{"name": f.get("name"), "type": f.get("type"), "size": f.get("size")}
+                     for f in files[:5]]
+            print(f"[drop] 一条路径都没拿到。dataTransfer.files = {brief}", flush=True)
+            if _is_elevated():
+                msg = "拖拽被拦了：本程序是以管理员身份运行的，Windows 不允许从资源管理器拖东西进来"
+            elif not files:
+                msg = "没拿到任何东西 —— 如果是文件夹，试试用「选择文件夹」按钮"
+            else:
+                msg = "拿到了文件但读不到路径 —— 请用「选择文件夹」按钮，或改用文件"
             try:
-                window.evaluate_js(
-                    "toast('没拿到路径 —— 文件夹不能拖入，请拖具体的文件')")
+                window.evaluate_js(f"toast({json.dumps(msg, ensure_ascii=False)})")
             except Exception:                                # noqa: BLE001
                 pass
             return
@@ -273,6 +290,54 @@ NATIVE_PROBE_JS = ("JSON.stringify({"
 # 自检改到 on_drop 里做 —— 那儿本来就在 UI 线程上，且页面肯定已就绪。
 
 
+def _diag() -> dict:
+    """启动自检：把"拖拽能不能用"的四个前提摊开打印出来。
+
+    拖拽失效在这几种情况下都是**静默**的，光看界面看不出来，所以必须自己报：
+      · 没装 pywebview          → 退回浏览器，根本没有拖放事件
+      · 以管理员身份运行        → Windows 的 UIPI 会拦掉从资源管理器拖过来的东西
+      · WebView2 运行时缺失/太旧 → 窗口开不出来或拿不到拖入路径
+      · 窗口创建失败            → 进程直接退出
+    """
+    info = {"pywebview": "", "webview2": "", "elevated": False}
+    try:
+        import webview
+        info["pywebview"] = getattr(webview, "__version__", "") or getattr(
+            __import__("importlib.metadata", fromlist=["version"]), "version")("pywebview")
+    except Exception as e:                                   # noqa: BLE001
+        info["pywebview"] = f"(读不到：{e})"
+    if os.name == "nt":
+        try:
+            import winreg
+            key = (r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients"
+                   r"\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}")
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
+                info["webview2"] = str(winreg.QueryValueEx(k, "pv")[0])
+        except Exception:                                    # noqa: BLE001
+            try:
+                import winreg
+                key = (r"SOFTWARE\Microsoft\EdgeUpdate\Clients"
+                       r"\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}")
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
+                    info["webview2"] = str(winreg.QueryValueEx(k, "pv")[0])
+            except Exception:                                # noqa: BLE001
+                info["webview2"] = "(没找到)"
+        try:
+            import ctypes
+            info["elevated"] = bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:                                    # noqa: BLE001
+            pass
+    return info
+
+
+def _print_diag(d: dict) -> None:
+    print(f"  pywebview : {d['pywebview'] or '(未知)'}", flush=True)
+    print(f"  WebView2  : {d['webview2'] or '(未知)'}", flush=True)
+    if d["elevated"]:
+        print("  ⚠ 本进程以【管理员】身份运行：Windows 会拦掉从资源管理器拖进来的文件/文件夹，"
+              "拖拽入库在这种模式下一定失效。请用普通权限（直接双击 prism.bat）启动。", flush=True)
+
+
 def _set_app_id() -> None:
     """给进程一个自己的 AppUserModelID。
 
@@ -288,26 +353,36 @@ def _set_app_id() -> None:
         print(f"[desktop] AppUserModelID 设置失败（任务栏可能仍是 Python 图标）：{e}", flush=True)
 
 
+def _fallback_browser(reason: str) -> None:
+    """打不开原生窗口时的退路：开系统浏览器，并把"为什么"和"拖拽会怎样"说清楚。"""
+    print(f"  ⚠ {reason} → 改用系统浏览器打开", flush=True)
+    print("  ⚠ 浏览器模式下**拖拽入库不可用**（网页拿不到文件的绝对路径）。", flush=True)
+    print("      · 入库请用界面上的「选择文件」/「选择文件夹」按钮", flush=True)
+    print("      · 想恢复拖拽：把 pywebview 装上（重跑 安装.bat），再双击 prism.bat", flush=True)
+    import webbrowser
+    webbrowser.open(URL)
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        pass
+
+
 def main() -> int:
     _set_app_id()
     if not _start_server():
         print("  !! HTTP 服务没起来，窗口没法打开", flush=True)
         return 1
     print(f"  服务就绪 {URL}", flush=True)
+    diag = _diag()
+    _print_diag(diag)
 
     try:
         import webview
         from webview.dom import DOMEventHandler
     except ImportError:
         # 没装 pywebview → 退回老样子：开系统浏览器
-        print("  没装 pywebview，改用系统浏览器打开", flush=True)
-        import webbrowser
-        webbrowser.open(URL)
-        try:
-            while True:
-                time.sleep(3600)
-        except KeyboardInterrupt:
-            pass
+        _fallback_browser("没有装 pywebview")
         return 0
 
     icon = _find_icon()
@@ -327,7 +402,11 @@ def main() -> int:
     if not geo.get("maximized") and geo.get("x") is not None and geo.get("y") is not None:
         kw["x"], kw["y"] = int(geo["x"]), int(geo["y"])   # 最大化时坐标是屏幕尺寸，不用它
     api = Api()
-    window = webview.create_window(WINDOW_TITLE, URL, js_api=api, **kw)
+    try:
+        window = webview.create_window(WINDOW_TITLE, URL, js_api=api, **kw)
+    except Exception as e:                                   # noqa: BLE001
+        _fallback_browser(f"桌面窗口创建失败（{type(e).__name__}: {e}）")
+        return 0
     _WIN[0] = window          # 🔴 模块级变量，别挂到 api 上（见 Api 的注释）
     _GEO_WINDOW[0] = window
 
@@ -350,10 +429,14 @@ def main() -> int:
 
     # private_mode=False 很关键：pywebview 默认是隐私模式，localStorage 每次全清，
     # 主题选择就记不住。storage_path 指到 Prism 自己的 data 里（不碰 C 盘）。
-    webview.start(bind, window,
-                  icon=icon,
-                  private_mode=False,
-                  storage_path=str(Path(config.DATA_DIR) / "webview"))
+    try:
+        webview.start(bind, window,
+                      icon=icon,
+                      private_mode=False,
+                      storage_path=str(Path(config.DATA_DIR) / "webview"))
+    except Exception as e:                                   # noqa: BLE001
+        _fallback_browser(f"桌面窗口启动失败（{type(e).__name__}: {e}）")
+        return 0
     _save_geo_now(window)
     print("  窗口已关闭，Prism 退出", flush=True)
     return 0

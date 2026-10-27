@@ -1082,3 +1082,20 @@ html, body {
 .ffbar i { display: block; height: 100%; width: 0; background: var(--ink-3); transition: width 0.3s; }
 .ffacts { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin-top: 0.3rem; }
 .ffhint { color: var(--ink-3); font-size: 0.64rem; }
+
+/* ---- 顶栏的运行模式徽标：桌面窗口 / 浏览器模式 ---- */
+.mode-badge {
+  font-size: 0.62rem;
+  padding: 0.12rem 0.4rem;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  cursor: default;
+}
+.mode-badge.ok { color: var(--ink-2); border-color: var(--line-2); }
+.mode-badge.warn {
+  color: #a0641f;
+  border-color: #a0641f55;
+  background: #a0641f14;
+}

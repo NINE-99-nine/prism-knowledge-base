@@ -2762,7 +2762,7 @@ function setupDrop() {
 
   dz.addEventListener("drop", (e) => {
     const files = Array.from(e.dataTransfer?.files || []);
-    if (!files.length) return;
+    const items = Array.from(e.dataTransfer?.items || []);
     /* 判据要在这里现算 —— setupDrop 跑在 boot 时，
        Python 侧可能还没来得及补设 __prismNative */
     if (isNativeWindow()) {
@@ -2771,6 +2771,20 @@ function setupDrop() {
       return;
     }
     // 普通浏览器：拿不到绝对路径 → 只能引导用原生选择框
+    const hasDir = items.some((it) => {
+      try { const en = it.webkitGetAsEntry && it.webkitGetAsEntry(); return !!(en && en.isDirectory); }
+      catch (_) { return false; }
+    });
+    if (!files.length) {
+      // 浏览器里拖文件夹多半根本没进 files —— 以前是静默返回，用户以为坏了
+      if (hasDir) {
+        toast("浏览器模式拿不到文件夹的真实路径 —— 已为你打开「选择文件夹」", 5000);
+        pickPaths("dir");
+      } else {
+        toast("这次拖的内容浏览器没给出可用文件；拖拽入库只在桌面窗口里完全可用", 5000);
+      }
+      return;
+    }
     toast("浏览器拿不到拖入文件的真实路径，已为你打开选择框", 4000);
     if (files.length === 1 && !files[0].type) {
       pickPaths("dir");          // 拖的是文件夹
@@ -2780,10 +2794,28 @@ function setupDrop() {
   });
 }
 
+/* 运行模式徽标：桌面窗口 = 能拖拽入库；浏览器 = 不能。
+   以前这件事没有任何提示，用户只能自己猜"为什么拖不进去"。 */
+function paintModeBadge() {
+  const el = $("#mode-badge");
+  if (!el) return;
+  const native = isNativeWindow();
+  el.textContent = native ? "桌面窗口 · 可拖拽" : "浏览器模式 · 拖拽入库不可用";
+  el.classList.toggle("ok", native);
+  el.classList.toggle("warn", !native);
+  el.title = native
+    ? "原生窗口：把文件或文件夹拖进窗口就能入库（拖到检索栏则是检索）"
+    : "浏览器拿不到文件的真实路径：入库请用「选择文件 / 选择文件夹」按钮；"
+      + "想要拖拽入库，请关闭这个页面，改用 prism.bat 启动";
+}
+
 /* ---------------------------------------------------------------- 启动 */
 
 async function boot() {
   setupDrop();
+  paintModeBadge();
+  /* 原生窗口的标记有时是拖放之后才补上的 → 隔一会儿再看一眼 */
+  setTimeout(paintModeBadge, 1500);
   $$(".tab").forEach((t) => (t.onclick = () => setView(t.dataset.view)));
   $("#btn-search").onclick = doSearch;
   $("#q").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
