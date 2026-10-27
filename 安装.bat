@@ -15,6 +15,32 @@ echo   ============================================================
 echo    Prism 棱镜 - 环境安装
 echo   ============================================================
 echo.
+
+REM ---- 先判断这一步是不是早就做过了：.venv 在、numpy 与 pywebview 都能 import ----
+set "PY=%~dp0.venv\Scripts\python.exe"
+if not exist "%PY%" goto do_install
+"%PY%" -c "import numpy, webview" >nul 2>nul
+if errorlevel 1 goto do_install
+
+REM ============ 已经装好：不再问 [1]/[2]，直接进 ffmpeg 这一步 ============
+echo   检查结果：Python 环境 .venv、numpy、pywebview 都已经装好，这一步跳过。
+echo.
+if exist "%~dp0.venv\ffmpeg\bin\ffmpeg.exe" goto ffmpeg_ready
+where ffmpeg >nul 2>nul
+if not errorlevel 1 goto ffmpeg_ready
+echo   剩下只有 ffmpeg 没装：音频、视频、AVIF/TIFF 图片现在导不进去。
+call :ask_ffmpeg
+if defined DEPLOY_FFMPEG goto after_deps
+set "QUICK=1"
+goto done
+
+:ffmpeg_ready
+echo   ffmpeg 也已经可用（本项目 .venv 里，或系统里早就装过），不需要再做任何事。
+set "QUICK=1"
+goto done
+
+REM ============ 还没装：完整安装流程 ============
+:do_install
 echo   这一步会在 prism 文件夹内创建一个独立 Python 环境
 echo   (.venv)，并安装以下必需依赖：
 echo.
@@ -35,25 +61,9 @@ if errorlevel 2 goto want_ffmpeg
 goto deps_start
 
 :want_ffmpeg
-echo.
-echo   ============================================================
-echo    先看清楚：ffmpeg 是什么、装了有什么用
-echo   ============================================================
-echo    作用   ：音频切段、视频抽帧、AVIF/TIFF 图片转 JPEG
-echo    不装   ：音频、视频、AVIF/TIFF 图片 无法导入索引；
-echo             文本和 png/jpg/webp/gif 图片完全不受影响
-echo    体积   ：约 80~100 MB（单个文件）
-echo    位置   ：本项目 .venv\ffmpeg\bin\ffmpeg.exe
-echo             （在 .venv 里，不进 git，也不会撑大发布包；
-echo               重跑本脚本若重建了 .venv，需要再部署一次）
-echo    建议   ：装上。本机如果早就装过 ffmpeg，程序会自动探测到，不必再装。
-echo.
-echo    必须按 Y 才会真的下载部署。
-set "YN="
-set /p "YN=   确认部署 ffmpeg？按 Y 回车继续，直接回车则跳过："
-if /i "%YN%"=="Y" set "DEPLOY_FFMPEG=1"
-if defined DEPLOY_FFMPEG goto deps_start
-echo   [跳过] 之后可在「设置 -^> ffmpeg」里一键部署。
+call :ask_ffmpeg
+if not defined DEPLOY_FFMPEG echo   [跳过] 之后可在「设置 -^> ffmpeg」里一键部署。
+goto deps_start
 
 :deps_start
 
@@ -198,6 +208,7 @@ if "%OK%"=="0" (
   exit /b 1
 )
 
+:after_deps
 if defined DEPLOY_FFMPEG (
   echo.
   echo   ---- ffmpeg（部署到 .venv\ffmpeg\bin）----
@@ -207,7 +218,6 @@ if defined DEPLOY_FFMPEG (
   if errorlevel 1 (
     echo.
     echo   [提示] ffmpeg 没部署成功（多半是网络或被代理拦住）。
-  "%PY%" "%~dp0tools\deploy_ffmpeg.py"
     echo          或自己下载 ffmpeg.exe 放到 .venv\ffmpeg\bin\ 下。
     echo          不影响文本和普通图片；音频/视频暂时导不进去。
   ) else (
@@ -215,11 +225,42 @@ if defined DEPLOY_FFMPEG (
   )
 )
 
+:done
+
 echo   环境就绪，现在可以双击 prism.bat 启动了。
 echo.
-echo   窗口将在 30 秒后自动关闭
-"%SystemRoot%\System32\timeout.exe" /t 30 >nul
+if defined QUICK (
+  echo   窗口将在 6 秒后自动关闭
+  "%SystemRoot%\System32\timeout.exe" /t 6 >nul
+) else (
+  echo   窗口将在 30 秒后自动关闭
+  "%SystemRoot%\System32\timeout.exe" /t 30 >nul
+)
 exit /b 0
+
+REM ============================================================
+REM  子程序：讲清楚 ffmpeg 是什么、多大、装在哪，要按一次 Y 才部署
+REM  两个入口都会 call 它：首次完整安装时、以及依赖已装好时
+REM ============================================================
+:ask_ffmpeg
+echo.
+echo   ============================================================
+echo    先看清楚：ffmpeg 是什么、装了有什么用
+echo   ============================================================
+echo    作用   ：音频切段、视频抽帧、AVIF/TIFF 图片转 JPEG
+echo    不装   ：音频、视频、AVIF/TIFF 图片 无法导入索引；
+echo             文本和 png/jpg/webp/gif 图片完全不受影响
+echo    体积   ：约 80~100 MB（单个文件）
+echo    位置   ：本项目 .venv\ffmpeg\bin\ffmpeg.exe
+echo             （在 .venv 里，不进 git，也不会撑大发布包；
+echo               重跑本脚本若重建了 .venv，需要再部署一次）
+echo    建议   ：装上。本机如果早就装过 ffmpeg，程序会自动探测到，不必再装。
+echo.
+echo    必须按 Y 才会真的下载部署。
+set "YN="
+set /p "YN=   确认部署 ffmpeg？按 Y 回车继续，直接回车则跳过："
+if /i "%YN%"=="Y" set "DEPLOY_FFMPEG=1"
+exit /b
 
 REM ============================================================
 REM  子程序：校验候选 Python

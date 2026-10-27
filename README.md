@@ -25,7 +25,7 @@ Prism 自带独立 Python 环境，放在 `prism\.venv\`（约 67 MB，含 numpy
 
 - 本机已经装好了，**不用管**。
 - 若把整个 `prism` 文件夹拷到别的机器、或 `.venv` 丢失，**双击 `安装.bat`** 重建即可。
-- `安装.bat` 一开始会问要不要连 **ffmpeg** 一起装：**10 秒内不选 = 只装必需的 numpy / pywebview**。
+- `安装.bat` 重复运行是安全的：**依赖已经装好就跳过那一段，直接问 ffmpeg；连 ffmpeg 都有了就几秒钟自己关掉**。首次运行时会问要不要连 **ffmpeg** 一起装（10 秒内不选 = 只装必需的 numpy / pywebview）。
 
 ### ffmpeg（音频、视频、AVIF/TIFF 图片要用）
 
