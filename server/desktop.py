@@ -256,9 +256,10 @@ def make_drop_handler(window):
                      for f in files[:5]]
             print(f"[drop] 一条路径都没拿到。dataTransfer.files = {brief}", flush=True)
             if _is_elevated():
-                msg = "拖拽被拦了：本程序是以管理员身份运行的，Windows 不允许从资源管理器拖东西进来"
+                msg = ("没拿到路径。你现在是管理员权限 —— 试试改成普通双击启动（有的机器正好相反）")
             elif not files:
-                msg = "没拿到任何东西 —— 如果是文件夹，试试用「选择文件夹」按钮"
+                msg = ("没拿到任何东西。试试右键 prism.bat → 以管理员身份运行"
+                       "（有的机器只有管理员模式收得到拖入）；也可以直接用「选择文件夹」")
             else:
                 msg = "拿到了文件但读不到路径 —— 请用「选择文件夹」按钮，或改用文件"
             try:
@@ -333,9 +334,10 @@ def _diag() -> dict:
 def _print_diag(d: dict) -> None:
     print(f"  pywebview : {d['pywebview'] or '(未知)'}", flush=True)
     print(f"  WebView2  : {d['webview2'] or '(未知)'}", flush=True)
+    print(f"  权限      : {'管理员（提权）' if d['elevated'] else '普通用户'}", flush=True)
     if d["elevated"]:
-        print("  ⚠ 本进程以【管理员】身份运行：Windows 会拦掉从资源管理器拖进来的文件/文件夹，"
-              "拖拽入库在这种模式下一定失效。请用普通权限（直接双击 prism.bat）启动。", flush=True)
+        print("  （提权与拖拽的关系因机器而异：有的机器只有管理员模式收得到拖入，"
+              "有的正好相反。拖不进去时，换另一种权限再启动一次即可。）", flush=True)
 
 
 def _set_app_id() -> None:
