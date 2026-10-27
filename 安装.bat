@@ -16,14 +16,46 @@ echo    Prism 棱镜 - 环境安装
 echo   ============================================================
 echo.
 echo   这一步会在 prism 文件夹内创建一个独立 Python 环境
-echo   (.venv)，并安装以下依赖：
+echo   (.venv)，并安装以下必需依赖：
 echo.
 echo     numpy      向量运算
 echo     pywebview  原生桌面窗口（有了它才能把文件拖进窗口直接入库）
 echo.
-echo   所有东西都留在 prism 文件夹里，不往别处写。
+echo   另外还有一个可选的：ffmpeg（音频切段 / 视频抽帧 / AVIF-TIFF 转图要用）。
+echo   它不是 Python 包，是单个可执行文件，约 80~100 MB，会装进 .venv\ffmpeg 里。
+echo   现在不装也能用（只是音频、视频、AVIF/TIFF 图片导不进去），
+echo   以后随时可以在界面的「设置 -^> ffmpeg」里点一下部署。
 echo.
-pause
+echo   ------------------------------------------------------------
+echo     [1] 只装上面两个必需依赖          默认，10 秒内不选就选这个
+echo     [2] 连 ffmpeg 一起装
+echo   ------------------------------------------------------------
+choice /c 12 /n /t 10 /d 1 /m "   请选择 [1/2]："
+if errorlevel 2 goto want_ffmpeg
+goto deps_start
+
+:want_ffmpeg
+echo.
+echo   ============================================================
+echo    先看清楚：ffmpeg 是什么、装了有什么用
+echo   ============================================================
+echo    作用   ：音频切段、视频抽帧、AVIF/TIFF 图片转 JPEG
+echo    不装   ：音频、视频、AVIF/TIFF 图片 无法导入索引；
+echo             文本和 png/jpg/webp/gif 图片完全不受影响
+echo    体积   ：约 80~100 MB（单个文件）
+echo    位置   ：本项目 .venv\ffmpeg\bin\ffmpeg.exe
+echo             （在 .venv 里，不进 git，也不会撑大发布包；
+echo               重跑本脚本若重建了 .venv，需要再部署一次）
+echo    建议   ：装上。本机如果早就装过 ffmpeg，程序会自动探测到，不必再装。
+echo.
+echo    必须按 Y 才会真的下载部署。
+set "YN="
+set /p "YN=   确认部署 ffmpeg？按 Y 回车继续，直接回车则跳过："
+if /i "%YN%"=="Y" set "DEPLOY_FFMPEG=1"
+if defined DEPLOY_FFMPEG goto deps_start
+echo   [跳过] 之后可在「设置 -^> ffmpeg」里一键部署。
+
+:deps_start
 
 set "PY=%~dp0.venv\Scripts\python.exe"
 set "BASE="
@@ -32,8 +64,6 @@ set "BASEARG="
 REM ---- 找一个可用的基础 Python（用来创建环境）----
 REM ---- 顺序：PRISM_PYTHON 环境变量 → py 启动器 → PATH 里的 python ----
 if defined PRISM_PYTHON if exist "%PRISM_PYTHON%" set "BASE=%PRISM_PYTHON%"
-
-REM 本机专用：直接指定本机 Python（工作版保留，发布版没有这一行）
 
 REM py 启动器：直接把它当解释器用，不捕获它的输出。
 REM 捕获要经过管道和控制台代码页，路径里一旦有非 ASCII 字符（比如全角括号），
@@ -166,6 +196,23 @@ if "%OK%"=="0" (
   echo.
   pause >nul
   exit /b 1
+)
+
+if defined DEPLOY_FFMPEG (
+  echo.
+  echo   ---- ffmpeg（部署到 .venv\ffmpeg\bin）----
+  echo   下载中请勿关闭窗口，失败会自动换备用源再试一次。
+  echo.
+  "%PY%" "%~dp0tools\deploy_ffmpeg.py"
+  if errorlevel 1 (
+    echo.
+    echo   [提示] ffmpeg 没部署成功（多半是网络或被代理拦住）。
+  "%PY%" "%~dp0tools\deploy_ffmpeg.py"
+    echo          或自己下载 ffmpeg.exe 放到 .venv\ffmpeg\bin\ 下。
+    echo          不影响文本和普通图片；音频/视频暂时导不进去。
+  ) else (
+    echo   ffmpeg 已就绪：.venv\ffmpeg\bin\ffmpeg.exe
+  )
 )
 
 echo   环境就绪，现在可以双击 prism.bat 启动了。

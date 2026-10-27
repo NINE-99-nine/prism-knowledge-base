@@ -2562,6 +2562,17 @@ async function openSettings() {
       <label><span>音频每段时长（秒）</span><input id="st-audiochunk" type="number" value="${c.audio_chunk_seconds || 60}" min="10" step="10"></label>
       <label><span>ffmpeg 路径</span><input id="st-ffmpeg" type="text" value="${escapeHtml(c.ffmpeg_path || "")}" placeholder="留空 = 自动探测"></label>
     </div>
+    <div class="ffbox" id="ffbox">
+      <div class="ffline"><b id="ff-state">检测中…</b><span id="ff-src" class="ffsrc"></span></div>
+      <div class="ffpath" id="ff-path"></div>
+      <div class="ffbar hidden" id="ff-bar"><i></i></div>
+      <div class="ffmsg" id="ff-msg"></div>
+      <div class="ffacts">
+        <button class="btn-ghost" id="ff-deploy" type="button">部署到本项目虚拟环境</button>
+        <button class="btn-ghost" id="ff-refresh" type="button">重新检测</button>
+        <span class="ffhint">约 80~100 MB · 装到 <code>.venv/ffmpeg/bin/</code>，不进 git、不撑大发布包</span>
+      </div>
+    </div>
     <div class="form-note">
       任何提供 <code>POST /v1/embeddings</code> 的服务都能接（llama.cpp / Ollama / 其他 OpenAI 兼容实现）。
       <br>⚠ 改<strong>维度</strong>后，用旧维度建的索引在检索时会被跳过（不会报错，但查不到）。
@@ -2627,6 +2638,73 @@ async function openSettings() {
       { label: "关闭" },
     ],
   });
+  wireFfmpegBox(form);
+}
+
+/* ffmpeg 状态 + 一键部署到本项目虚拟环境（设置弹层里那一块） */
+async function wireFfmpegBox(root) {
+  const q = (id) => root.querySelector("#" + id);
+  const stateEl = q("ff-state"), srcEl = q("ff-src"), pathEl = q("ff-path");
+  const bar = q("ff-bar"), msg = q("ff-msg"), btn = q("ff-deploy"), again = q("ff-refresh");
+  if (!stateEl) return;
+  let timer = null;
+
+  const paint = (st) => {
+    if (st.found) {
+      stateEl.textContent = "✅ 已找到 ffmpeg";
+      srcEl.textContent = st.source ? `· ${st.source}` : "";
+      pathEl.textContent = st.path || "";
+      msg.textContent = st.version || "";
+      btn.textContent = "部署到本项目虚拟环境（换成自带的）";
+    } else {
+      stateEl.textContent = "⚠ 没有找到 ffmpeg";
+      srcEl.textContent = "";
+      pathEl.textContent = "音频 / 视频 / AVIF·TIFF 图片现在无法索引";
+      msg.textContent = "";
+      btn.textContent = "部署到本项目虚拟环境";
+    }
+  };
+
+  const check = async () => {
+    try { paint(await api("/api/ffmpeg")); }
+    catch (e) { stateEl.textContent = "检测失败：" + e.message; }
+  };
+
+  const poll = async () => {
+    let d;
+    try { d = await api("/api/ffmpeg/deploy"); } catch (e) { return; }
+    bar.classList.remove("hidden");
+    bar.firstElementChild.style.width = Math.max(2, d.pct || 0) + "%";
+    msg.textContent = d.message || "";
+    if (d.state === "running") return;
+    clearInterval(timer);
+    timer = null;
+    btn.disabled = false;
+    await check();
+    if (d.state === "done") toast("ffmpeg 已装进本项目虚拟环境，音频/视频可以导入了");
+    else if (d.state === "error") {
+      msg.textContent = (d.log || []).slice(-2).join(" / ") || "部署失败";
+      toast("部署失败（多半是网络/代理），也可以在上面手填已有 ffmpeg 路径");
+    }
+  };
+
+  btn.onclick = async () => {
+    btn.disabled = true;
+    bar.classList.remove("hidden");
+    bar.firstElementChild.style.width = "2%";
+    msg.textContent = "正在准备下载…";
+    try {
+      await api("/api/ffmpeg/deploy", { method: "POST", body: "{}" });
+    } catch (e) {
+      btn.disabled = false;
+      return toast("启动失败：" + e.message);
+    }
+    clearInterval(timer);
+    timer = setInterval(poll, 700);
+    setTimeout(poll, 400);
+  };
+  again.onclick = () => { check(); toast("已重新检测"); };
+  check();
 }
 
 /* ---------------------------------------------------------------- 拖拽 */

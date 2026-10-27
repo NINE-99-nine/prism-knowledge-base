@@ -23,25 +23,110 @@ EDITABLE = {
 }
 
 
-def find_ffmpeg() -> str:
-    """自动探测 ffmpeg。找到返回路径，找不到返回空串。
+def _ffmpeg_candidates() -> list[str]:
+    """按「越可能命中、越不打扰」的顺序列出候选路径。
 
-    顺序：环境变量 → PATH → 常见安装位置（不写死任何人的本机路径）。
+    顺序：设置里的手填值 → PRISM_FFMPEG → PATH → 本项目（虚拟环境 / data/bin）
+          → 各种包管理器安装位置 → 常见安装位置 → 类 Unix 路径
+    刻意不写死任何个人机器的路径。
     """
     import os
     import shutil
+    from pathlib import Path
+
+    out: list[str] = []
+    manual = ""
+    try:
+        manual = (load().get("ffmpeg_path") or "").strip()
+    except Exception:                                   # noqa: BLE001
+        manual = ""
+    if manual:
+        out.append(manual)                              # 用户明确指定的，最有优先级
     env = (os.environ.get("PRISM_FFMPEG") or "").strip()
-    if env and os.path.isfile(env):
-        return env
-    p = shutil.which("ffmpeg")
-    if p:
-        return p
-    for c in (r"C:\ffmpeg\bin\ffmpeg.exe",
-              r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
-              "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"):
+    if env:
+        out.append(env)
+
+    exe = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    root = Path(config.ROOT)
+    out += [
+        str(root / ".venv" / "ffmpeg" / "bin" / exe),   # 本项目部署的（推荐位置）
+        str(root / "data" / "bin" / exe),
+        str(root / "bin" / exe),
+    ]
+    w = shutil.which("ffmpeg")                          # 系统 PATH
+    if w:
+        out.append(w)
+    if os.name == "nt":
+        la = os.environ.get("LOCALAPPDATA", "")
+        up = os.environ.get("USERPROFILE", "")
+        pd = os.environ.get("ProgramData", "")
+        for base in (
+            f"{la}\\Microsoft\\WinGet\\Links\\ffmpeg.exe",
+            f"{up}\\scoop\\shims\\ffmpeg.exe",
+            f"{pd}\\chocolatey\\bin\\ffmpeg.exe",
+            "C:\\ffmpeg\\bin\\ffmpeg.exe",
+            "C:\\ffmpeg.exe",
+            "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
+            "C:\\Program Files (x86)\\ffmpeg\\bin\\ffmpeg.exe",
+        ):
+            if base:
+                out.append(base)
+    else:
+        out += ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"]
+    return [p for p in dict.fromkeys(out) if p]
+
+
+def find_ffmpeg() -> str:
+    """自动探测 ffmpeg。找到返回路径，找不到返回空串（不做版本校验，够快）。"""
+    import os
+    for c in _ffmpeg_candidates():
         if os.path.isfile(c):
             return c
     return ""
+
+
+def ffmpeg_version(path: str) -> str:
+    """跑一次 -version 取版本行；拿不到返回空串。"""
+    import subprocess
+    try:
+        r = subprocess.run([path, "-version"], capture_output=True, text=True, timeout=20)
+        if r.returncode == 0 and r.stdout:
+            return (r.stdout.splitlines() or [""])[0].strip()
+    except Exception:
+        pass
+    return ""
+
+
+def ffmpeg_status() -> dict:
+    """给界面/接口用：找到没有、在哪、什么版本、从哪来的。"""
+    manual = (load().get("ffmpeg_path") or "").strip()
+    hit = find_ffmpeg()
+    deployed = str((__import__("pathlib").Path(config.ROOT) / ".venv" / "ffmpeg" / "bin" /
+                    ("ffmpeg.exe" if __import__("os").name == "nt" else "ffmpeg")))
+    src = ""
+    if hit:
+        low = hit.lower()
+        if low.endswith(deployed.lower()):
+            src = "本项目虚拟环境里部署的"
+        elif manual and hit == manual:
+            src = "设置里手填"
+        elif "winget" in low:
+            src = "WinGet"
+        elif "scoop" in low:
+            src = "Scoop"
+        elif "chocolatey" in low:
+            src = "Chocolatey"
+        else:
+            src = "系统 PATH / 常见位置"
+    return {
+        "found": bool(hit),
+        "path": hit,
+        "version": ffmpeg_version(hit) if hit else "",
+        "source": src,
+        "deployed_path": deployed,
+        "deployed": bool(hit) and hit.lower().endswith(deployed.lower()),
+        "candidates": _ffmpeg_candidates()[:12],
+    }
 
 
 DEFAULTS = {
@@ -55,6 +140,17 @@ DEFAULTS = {
 
 _lock = threading.Lock()
 _cache: dict | None = None
+
+
+def apply_deployed_ffmpeg() -> str:
+    """部署成功后，把 .venv 里的那个路径写进设置（优先级最高、永远先命中）。"""
+    from pathlib import Path
+    import os
+    exe = Path(config.ROOT) / ".venv" / "ffmpeg" / "bin" / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+    if exe.is_file():
+        save({"ffmpeg_path": str(exe)})
+        return str(exe)
+    return ""
 
 
 def load() -> dict:

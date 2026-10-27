@@ -25,6 +25,21 @@ Prism 自带独立 Python 环境，放在 `prism\.venv\`（约 67 MB，含 numpy
 
 - 本机已经装好了，**不用管**。
 - 若把整个 `prism` 文件夹拷到别的机器、或 `.venv` 丢失，**双击 `安装.bat`** 重建即可。
+- `安装.bat` 一开始会问要不要连 **ffmpeg** 一起装：**10 秒内不选 = 只装必需的 numpy / pywebview**。
+
+### ffmpeg（音频、视频、AVIF/TIFF 图片要用）
+
+没有 ffmpeg 时：文本、png/jpg/webp/gif 图片照常；**音频、视频、AVIF/TIFF 图片导不进去**。
+
+- 查找顺序：设置里手填的路径 → `PRISM_FFMPEG` 环境变量 → 本项目的 `.venv\ffmpeg\bin\ffmpeg.exe`
+  → `data\bin\` → 系统 PATH → WinGet / Scoop / Chocolatey → `C:\ffmpeg` 等常见位置。
+  本机早就装过 ffmpeg 的，会自动用上，不必再装一份。
+- 找不到时：**设置 → ffmpeg 那一栏 → 「部署到本项目虚拟环境」**，自动下载（约 80~100 MB，单个 exe）到
+  `.venv\ffmpeg\bin\ffmpeg.exe`。带进度；失败会自动换备用源；也可以自己在上面手填路径。
+- 部署位置刻意放在 `.venv` 里：属于这套自包含软件自己的东西，`.gitignore` 已忽略，不进仓库、不撑大发布包。
+- 装好之后，`ffmpeg -version` 能出版本号才算成功（脚本就是这么验证的，不是"文件存在"就算）。
+- 离线/内网：设 `PRISM_FFMPEG_URL` 指向自己的 ffmpeg zip（里面要有 `bin/ffmpeg.exe`）即可。
+- 导入前会预检：这批里若有音频/视频/AVIF·TIFF 而 ffmpeg 缺失，会**当场拦下并指路**，不会让它们一个个失败。
 
 ### 启动
 

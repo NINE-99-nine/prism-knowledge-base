@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,6 +26,7 @@ import db
 import embedder
 import importer
 import search
+import scanner
 import settings
 import config
 import virtual
@@ -32,6 +34,22 @@ from config import HOST, PORT, WEB_DIR
 from embedder import health as embed_health
 
 MAX_BODY = 96 * 1024 * 1024     # 请求体上限（拖拽检索会把文件以 base64 送进来，膨胀约 33%）
+
+
+# ffmpeg 部署的进度（单实例够用；刷新页面不丢，重启服务清零）
+_FFMPEG_DEPLOY: dict = {"state": "idle", "pct": 0, "message": "", "log": []}
+
+# 没有 ffmpeg 就一定处理不了的格式：音频、视频、以及要转 JPEG 的 AVIF/TIFF
+_FFMPEG_ONLY_EXT = set(config.AUDIO_EXT) | set(config.VIDEO_EXT) | {".avif", ".tif", ".tiff"}
+
+
+def _count_needs_ffmpeg(paths, recursive: bool, include_ext) -> int:
+    """数一下这批里有多少个文件非 ffmpeg 不可（扫描一次，只在缺 ffmpeg 时才调用）。"""
+    try:
+        files, _ = scanner.scan(paths, recursive=recursive, include_ext=include_ext)
+    except Exception:                                   # noqa: BLE001
+        return 0
+    return sum(1 for f in files if Path(f["path"]).suffix.lower() in _FFMPEG_ONLY_EXT)
 
 
 class Api:
@@ -152,6 +170,62 @@ class Api:
     def settings_reset() -> dict:
         return {"ok": True, "settings": settings.reset()}
 
+    # ---- ffmpeg：检测 / 部署到本项目虚拟环境 ----
+    @staticmethod
+    def ffmpeg_status() -> dict:
+        return settings.ffmpeg_status()
+
+    @staticmethod
+    def ffmpeg_deploy_start(body: dict) -> dict:
+        """后台下载 ffmpeg 到 .venv/ffmpeg/bin/，进度用 /api/ffmpeg/deploy 轮询。"""
+        if _FFMPEG_DEPLOY.get("state") == "running":
+            return {"ok": True, "state": "running", "already": True}
+        proxy = ((body or {}).get("proxy") or os.environ.get("PRISM_PROXY") or "").strip()
+        script = Path(__file__).resolve().parent.parent / "tools" / "deploy_ffmpeg.py"
+        if not script.is_file():
+            raise ValueError("找不到 tools/deploy_ffmpeg.py")
+        env = dict(os.environ)
+        if proxy:
+            env["PRISM_PROXY"] = proxy
+
+        def _run():
+            _FFMPEG_DEPLOY.update(state="running", pct=0, message="准备下载…",
+                                  started=time.time(), log=[])
+            try:
+                p = subprocess.Popen(
+                    [sys.executable, str(script)],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding="utf-8", errors="replace", env=env)
+                for line in p.stdout:                       # noqa: PLR1702
+                    line = (line or "").rstrip()
+                    if line.startswith("PROGRESS "):
+                        try:
+                            _, pct, msg = line.split(" ", 2)
+                            _FFMPEG_DEPLOY.update(pct=int(pct), message=msg)
+                        except ValueError:
+                            pass
+                    elif line:
+                        _FFMPEG_DEPLOY["log"] = (_FFMPEG_DEPLOY.get("log") or [])[-20:] + [line]
+                p.wait()
+                ok = p.returncode == 0
+                _FFMPEG_DEPLOY.update(
+                    state="done" if ok else "error",
+                    pct=100 if ok else _FFMPEG_DEPLOY.get("pct", 0),
+                    message="部署完成，正在重新检测…" if ok else "部署失败（看下面的日志）")
+                if ok:
+                    settings.apply_deployed_ffmpeg()        # 写进设置，立刻生效
+            except Exception as e:                          # noqa: BLE001
+                _FFMPEG_DEPLOY.update(state="error", message=f"{type(e).__name__}: {e}")
+
+        threading.Thread(target=_run, name="prism-ffmpeg-deploy", daemon=True).start()
+        return {"ok": True, "state": "running"}
+
+    @staticmethod
+    def ffmpeg_deploy_status() -> dict:
+        d = dict(_FFMPEG_DEPLOY)
+        d["found"] = settings.find_ffmpeg()
+        return d
+
     @staticmethod
     def settings_test(body: dict) -> dict:
         """拿给定配置真发一次嵌入请求，验证能不能用、维度对不对。"""
@@ -201,6 +275,14 @@ class Api:
         if isinstance(raw_tags, str):
             raw_tags = [t for t in raw_tags.replace("，", ",").split(",") if t.strip()]
         tags = [str(t).strip() for t in raw_tags if str(t).strip()]
+        # 缺 ffmpeg 时不要「每个音频/视频各失败一次」——开始前就拦下并指路
+        if not settings.find_ffmpeg():
+            need = _count_needs_ffmpeg(paths, bool(body.get("recursive", True)), include_ext)
+            if need:
+                raise ValueError(
+                    f"这批里有 {need} 个文件（音频 / 视频 / AVIF·TIFF 图片）必须先有 ffmpeg 才能索引。"
+                    "去「设置」→ ffmpeg 那一栏，点「部署到本项目虚拟环境」，装好再导入；"
+                    "或者在「格式」里只勾文本/图片，先把不需要 ffmpeg 的那部分导进去。")
         job = importer.start_import(lid, paths, bool(body.get("recursive", True)),
                                     include_ext, tags)
         return {"job_id": job, "include_ext": include_ext or [], "tags": tags}
@@ -751,6 +833,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(Api.settings_test(self._body()))
             if seg == ["settings", "reset"] and m == "POST":
                 return self._json(Api.settings_reset())
+
+            if seg == ["ffmpeg"] and m == "GET":
+                return self._json(Api.ffmpeg_status())
+            if seg == ["ffmpeg", "deploy"]:
+                if m == "POST":
+                    return self._json(Api.ffmpeg_deploy_start(self._body()))
+                if m == "GET":
+                    return self._json(Api.ffmpeg_deploy_status())
 
             if seg == ["files"] and m == "DELETE":
                 return self._json(Api.file_delete(self._body()))

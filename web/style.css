@@ -1058,3 +1058,27 @@ html, body {
   font-size: 0.7rem;
   padding: 0.1rem 0;
 }
+
+/* ---- 设置里的 ffmpeg 状态 / 一键部署 ---- */
+.ffbox {
+  margin: 0.4rem 0 0.2rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  background: var(--paper-2);
+  font-size: 0.72rem;
+}
+.ffline { display: flex; align-items: baseline; gap: 0.3rem; }
+.ffsrc { color: var(--ink-3); font-size: 0.68rem; }
+.ffpath { color: var(--ink-2); font-size: 0.68rem; margin-top: 0.15rem; word-break: break-all; }
+.ffmsg { color: var(--ink-3); font-size: 0.66rem; margin-top: 0.15rem; }
+.ffbar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line-2);
+  overflow: hidden;
+  margin: 0.35rem 0 0.2rem;
+}
+.ffbar i { display: block; height: 100%; width: 0; background: var(--ink-3); transition: width 0.3s; }
+.ffacts { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin-top: 0.3rem; }
+.ffhint { color: var(--ink-3); font-size: 0.64rem; }
